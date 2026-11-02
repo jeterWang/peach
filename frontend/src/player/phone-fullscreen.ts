@@ -1,82 +1,37 @@
-/* 竖屏窄视口上的全屏补路。
- *
- * iPhone Safari 常常报得出 Fullscreen API，点下去却进不了元素全屏。视频自己的
- * `webkitSetPresentationMode` / `webkitEnterFullscreen` 仍能打开系统全屏。桌面没有这些方法，
- * 计划直接交回 Video.js，宽屏布局和控件不受影响。 */
+/* iPhone Safari 没有元素全屏。全屏按钮在窄触屏的 iPhone 上把播放器铺满视口，
+ * 不调用 `webkitEnterFullscreen`，Peach 的控制条和字幕留在页面里。
+ * 桌面和宽屏不走这条，仍由 Video.js 的全屏按钮处理。 */
 
-export type PhoneFullscreenPlan = 'delegate' | 'webkit-exit' | 'element-then-webkit' | 'webkit-enter';
+export const FULLWINDOW_QUERY = '(max-width: 760px) and (pointer: coarse)';
+export const FULLWINDOW_ATTR = 'data-peach-fullwindow';
 
-export interface WebkitFullscreenVideo {
-  webkitDisplayingFullscreen?: boolean;
-  webkitPresentationMode?: string;
-  webkitEnterFullscreen?: () => void;
-  webkitExitFullscreen?: () => void;
-  webkitSetPresentationMode?: (mode: string) => void;
+export type FullWindowPlan = 'delegate' | 'enter' | 'exit';
+
+/** 窄触屏上的 iPhone / iPod。桌面改窄、Android 都不算。 */
+export function prefersFullWindow(narrowTouch: boolean, userAgent: string): boolean {
+  return narrowTouch && /iPhone|iPod/.test(userAgent);
 }
 
-export interface PhoneFullscreenInput {
-  portrait: boolean;
-  webkit: boolean;
-  elementFullscreen: boolean;
-  elementActive: boolean;
-  webkitActive: boolean;
+export function fullWindowOnThisDevice(): boolean {
+  const narrowTouch = typeof matchMedia === 'function' && matchMedia(FULLWINDOW_QUERY).matches;
+  return prefersFullWindow(narrowTouch, navigator.userAgent);
 }
 
-/** 设备竖屏且视口不宽于手机详情断点。横屏和桌面不匹配。 */
-export const PORTRAIT_PHONE_QUERY = '(max-width: 760px) and (orientation: portrait)';
+export function planFullWindow(input: { fullWindow: boolean; active: boolean }): FullWindowPlan {
+  if (!input.fullWindow) return 'delegate';
+  return input.active ? 'exit' : 'enter';
+}
 
-export const portraitPhone = (): boolean => matchMedia(PORTRAIT_PHONE_QUERY).matches;
+export function fullWindowActive(root: Element | null): boolean {
+  return !!root?.hasAttribute(FULLWINDOW_ATTR);
+}
 
-export const webkitVideoFullscreenAvailable = (video: WebkitFullscreenVideo): boolean =>
-  typeof video.webkitEnterFullscreen === 'function' || typeof video.webkitSetPresentationMode === 'function';
+export function setFullWindow(root: HTMLElement, active: boolean): void {
+  root.toggleAttribute(FULLWINDOW_ATTR, active);
+  document.documentElement.toggleAttribute(FULLWINDOW_ATTR, active);
+  document.body.classList.toggle('vjs-full-window', active);
+}
 
-export const webkitVideoFullscreenActive = (video: WebkitFullscreenVideo): boolean =>
-  video.webkitDisplayingFullscreen === true || video.webkitPresentationMode === 'fullscreen';
-
-export const elementFullscreenEnabled = (): boolean => {
-  const doc = document as Document & { webkitFullscreenEnabled?: boolean };
-  return !!doc.fullscreenEnabled || !!doc.webkitFullscreenEnabled;
-};
-
-export const elementFullscreenActive = (): boolean => {
-  const doc = document as Document & { webkitFullscreenElement?: Element | null };
-  return !!(doc.fullscreenElement || doc.webkitFullscreenElement);
-};
-
-/** 已经在元素全屏里时交给 Video.js 退出；其余竖屏且具备 webkit 视频全屏时由 Peach 补路。 */
-export const planPhoneFullscreen = (input: PhoneFullscreenInput): PhoneFullscreenPlan => {
-  if (!input.portrait || !input.webkit || input.elementActive) return 'delegate';
-  if (input.webkitActive) return 'webkit-exit';
-  return input.elementFullscreen ? 'element-then-webkit' : 'webkit-enter';
-};
-
-export const enterWebkitVideoFullscreen = (video: WebkitFullscreenVideo): boolean => {
-  if (typeof video.webkitSetPresentationMode === 'function') {
-    video.webkitSetPresentationMode('fullscreen');
-    return true;
-  }
-  if (typeof video.webkitEnterFullscreen === 'function') {
-    video.webkitEnterFullscreen();
-    return true;
-  }
-  return false;
-};
-
-export const exitWebkitVideoFullscreen = (video: WebkitFullscreenVideo): boolean => {
-  if (video.webkitPresentationMode === 'fullscreen' && typeof video.webkitSetPresentationMode === 'function') {
-    video.webkitSetPresentationMode('inline');
-    return true;
-  }
-  if (typeof video.webkitExitFullscreen === 'function') {
-    video.webkitExitFullscreen();
-    return true;
-  }
-  return false;
-};
-
-export const requestElementFullscreen = (container: HTMLElement): Promise<void> => {
-  const node = container as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> | void };
-  const request = node.requestFullscreen?.bind(node) ?? node.webkitRequestFullscreen?.bind(node);
-  if (!request) return Promise.reject(new Error('element fullscreen unavailable'));
-  return Promise.resolve(request());
-};
+export function exitFullWindow(root: HTMLElement | null): void {
+  if (root) setFullWindow(root, false);
+}

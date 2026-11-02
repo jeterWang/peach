@@ -410,6 +410,16 @@ video.video-js{vertical-align:top;font-size:10px;line-height:1;font-family:Arial
   max-width:none!important;max-height:none!important;aspect-ratio:auto!important;z-index:10000!important}
 [data-stage-media] :is([data-stage-media]>.video-js.vjs-fullscreen,.video-js.vjs-fullscreen,.video-js[data-peach-fullscreen],body.vjs-full-window .video-js,.video-js:fullscreen,.video-js:-webkit-full-screen,.video-js:-moz-full-screen,[data-stage-media]:fullscreen>.video-js,[data-stage-media]:-webkit-full-screen>.video-js,[data-stage-media]:-moz-full-screen>.video-js) .vjs-tech{
   position:absolute!important;inset:0!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;object-fit:contain!important}
+/* iPhone 页内全屏：铺满可视视口，压过竖屏那条按视口减出来的高度。只在播放器带
+   `data-peach-fullwindow` 时生效，桌面不会带上这个属性。 */
+.video-js[data-peach-fullwindow]{position:fixed!important;inset:0!important;z-index:10000!important;width:100vw!important;
+  height:100vh!important;height:100dvh!important;max-width:none!important;max-height:none!important;margin:0!important;
+  aspect-ratio:auto!important;border-radius:0!important}
+.video-js[data-peach-fullwindow] .vjs-tech{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;
+  max-width:none!important;max-height:none!important;object-fit:contain!important}
+.video-js[data-peach-fullwindow] .vjs-control-bar{left:max(8px,env(safe-area-inset-left,0px))!important;
+  right:max(8px,env(safe-area-inset-right,0px))!important;bottom:calc(8px + env(safe-area-inset-bottom,0px))!important}
+html[data-peach-fullwindow],html[data-peach-fullwindow] body{overflow:hidden!important}
 [data-player-stats-button]{position:absolute;left:11px;top:11px;z-index:8;width:40px;height:40px;padding:0;
   display:grid;place-items:center;border:0;border-radius:50%;
   background:rgba(0,0,0,.6);color:#fff;cursor:pointer;box-shadow:none;isolation:isolate;overflow:hidden}

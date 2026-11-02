@@ -396,3 +396,11 @@ body[data-detail-open] [class~=glowlayer]::before{animation-play-state:paused,pa
   [data-stage]:not([data-theater]) [data-stage-scroll] :is([data-jav-video]>[class~="video-js"],[data-item-gallery]>[class~="video-js"]){
     width:100%;height:var(--detail-gallery-height);max-height:none;aspect-ratio:auto}
 }
+/* 页内全屏盖住竖屏高度。舞台上的 transform / overflow 会把 fixed 关在对话框里，这里拆掉。
+   属性只由 iPhone 的全屏按钮写上，桌面没有这条状态。 */
+html[data-peach-fullwindow] [data-stage]:has(.video-js[data-peach-fullwindow]){inset:0!important;width:100vw!important;max-width:none!important;
+  height:100vh!important;height:100dvh!important;max-height:none!important;margin:0!important;border-radius:0!important;
+  transform:none!important;filter:none!important;animation:none!important;overflow:visible!important}
+html[data-peach-fullwindow] [data-stage-media]:has(>.video-js[data-peach-fullwindow]),
+html[data-peach-fullwindow] [data-stage-scroll]:has(.video-js[data-peach-fullwindow]){overflow:visible!important;height:100dvh!important;max-height:none!important;border-radius:0!important}
+html[data-peach-fullwindow] [data-stage-media]>.video-js[data-peach-fullwindow]{width:100vw!important;height:100dvh!important;max-height:none!important;aspect-ratio:auto!important}

@@ -142,6 +142,35 @@ describe(`竖屏窄视口播放器：${label}`, () => {
     } finally { await page.close() }
   });
 
+  it('390×844 页内全屏盖住视口，画面不裁切', { timeout: 30_000 }, async () => {
+    const page = await open({ width: 390, height: 844 });
+    try {
+      await page.evaluate(() => {
+        document.documentElement.setAttribute('data-peach-fullwindow', '');
+        document.body.classList.add('vjs-full-window');
+        document.querySelector('.video-js')!.setAttribute('data-peach-fullwindow', '');
+      });
+      const box = await playerBox(page);
+      const position = await page.locator('.video-js').evaluate((node) => getComputedStyle(node).position);
+      assert.equal(box.fit, 'contain');
+      assert.equal(position, 'fixed');
+      assert.ok(box.height > 844 * .95, `页内全屏高度 ${box.height}px，没有盖住视口`);
+      assert.ok(box.width > 390 * .95, `页内全屏宽度 ${box.width}px`);
+      const scroll = await page.evaluate(() => getComputedStyle(document.documentElement).overflow);
+      assert.equal(scroll, 'hidden');
+    } finally { await page.close() }
+  });
+
+  it('桌面没有页内全屏属性时仍是 16:9', { timeout: 30_000 }, async () => {
+    const page = await open({ width: 1280, height: 800 });
+    try {
+      const box = await playerBox(page);
+      const marked = await page.locator('.video-js').evaluate((node) => node.hasAttribute('data-peach-fullwindow'));
+      assert.equal(marked, false);
+      assert.equal(box.aspect, '16 / 9');
+    } finally { await page.close() }
+  });
+
   it('手机横屏不拉高，全屏仍收在展开键里', { timeout: 30_000 }, async () => {
     const page = await open({ width: 700, height: 400 });
     try {

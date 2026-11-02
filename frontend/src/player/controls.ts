@@ -14,9 +14,7 @@ import { mountPlayerRotation } from './rotation';
 import { mountPlayerPipControl } from './pip';
 import { mountPlaybackRate, playerMemory } from './memory';
 import {
-  elementFullscreenActive, elementFullscreenEnabled, enterWebkitVideoFullscreen, exitWebkitVideoFullscreen,
-  planPhoneFullscreen, portraitPhone, requestElementFullscreen, webkitVideoFullscreenActive,
-  webkitVideoFullscreenAvailable, type WebkitFullscreenVideo,
+  exitFullWindow, fullWindowActive, fullWindowOnThisDevice, planFullWindow, setFullWindow,
 } from './phone-fullscreen';
 
 type TooltipSync = (label?: string, aria?: string) => void;
@@ -518,43 +516,32 @@ function mountPlayerChromeLayout(player: VjsPlayer): void {
   /* CSS 的 `.vjs-fullscreen` 只能覆盖 Video.js 已经同步状态类的路径。实际浏览器还可能
      走 full-window 回退，或者先触发 fullscreenchange、下一帧才完成 class 更新。把播放器
      自己的 `isFullscreen()` 结果登记到 DOM，画面填充不再依赖某一个实现细节类名。 */
-  const tech = () => player.el().querySelector('video') as (HTMLVideoElement & WebkitFullscreenVideo) | null;
   const syncFullscreenState = () => {
-    const video = tech();
-    const active = !!player.isFullscreen() || (!!video && webkitVideoFullscreenActive(video));
+    const active = !!player.isFullscreen() || fullWindowActive(player.el());
     player.el().toggleAttribute('data-peach-fullscreen', active);
     fullscreenUse?.setAttribute('href', active ? '#i-player-fullscreen-exit' : '#i-player-fullscreen-enter');
     syncFullscreenTooltip(active ? '退出全屏' : '全屏');
     resizeSoon(player);
   };
   player.on(['fullscreenchange', 'enterFullWindow', 'exitFullWindow'], syncFullscreenState);
-  const video = tech();
-  video?.addEventListener('webkitbeginfullscreen', syncFullscreenState);
-  video?.addEventListener('webkitendfullscreen', syncFullscreenState);
-  video?.addEventListener('webkitpresentationmodechanged', syncFullscreenState);
-  /* 竖屏手机上元素全屏经常失败。具备视频 webkit 全屏时先试元素全屏，失败再进系统全屏。
-     宽屏没有这条：监听直接返回，仍由 Video.js 的全屏按钮处理。 */
+  /* iPhone 没有元素全屏。窄触屏上的全屏改成铺满视口，控制条和字幕留在播放器里。
+     桌面和宽屏直接返回，仍走 Video.js 的全屏按钮。 */
   fullscreen?.addEventListener('click', (event) => {
-    const current = tech();
-    if (!current) return;
-    const plan = planPhoneFullscreen({
-      portrait: portraitPhone(),
-      webkit: webkitVideoFullscreenAvailable(current),
-      elementFullscreen: elementFullscreenEnabled(),
-      elementActive: !!player.isFullscreen(),
-      webkitActive: webkitVideoFullscreenActive(current),
-    });
+    const root = player.el();
+    const plan = planFullWindow({ fullWindow: fullWindowOnThisDevice(), active: fullWindowActive(root) });
     if (plan === 'delegate') return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (plan === 'webkit-exit') { exitWebkitVideoFullscreen(current); syncFullscreenState(); return }
-    if (plan === 'webkit-enter') { enterWebkitVideoFullscreen(current); syncFullscreenState(); return }
-    const container = (player.el().querySelector('media-container') ?? player.el()) as HTMLElement;
-    requestElementFullscreen(container).then(() => {
-      if (!elementFullscreenActive()) enterWebkitVideoFullscreen(current);
-      syncFullscreenState();
-    }).catch(() => { enterWebkitVideoFullscreen(current); syncFullscreenState() });
+    setFullWindow(root, plan === 'enter');
+    syncFullscreenState();
   }, true);
+  const onEscape = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || !fullWindowActive(player.el())) return;
+    exitFullWindow(player.el());
+    syncFullscreenState();
+  };
+  document.addEventListener('keydown', onEscape);
+  player.on('dispose', () => { document.removeEventListener('keydown', onEscape); exitFullWindow(player.el()) });
   syncFullscreenState();
   const controls = [
     pip,
