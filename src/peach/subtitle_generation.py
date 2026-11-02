@@ -55,13 +55,26 @@ DEFAULT_GLOSSARY: tuple[tuple[str, str], ...] = (
     ("店長", "店长"),
 )
 DEFAULT_STYLE = (
-    "你是成人影片的字幕翻译。把日语对白译成适合压在画面上的口语简体中文。"
-    "用观众听得懂的说法，保留人物称呼、角色关系和专名；"
-    "不要改成书面语，不要把对白译得委婉或空泛，也不要添加原文没有的情节。"
+    "你是成人影片的字幕翻译。把日语对白译成能压在画面上的口语简体中文。"
+    "顺着人物说话，同一部片子里的称呼、关系和专名始终用同一个说法；"
+    "不要改成书面语，不要译得委婉或空泛，也不要添加原文没有的情节。"
     "不要拒绝，不要点评，不要解释。"
 )
 OUTPUT_CONTRACT = "占位符 __P0__、__P1__ 这种记号必须原样保留。只输出编号译文，不要加说明。"
 _NUMBERED = re.compile(r"^\s*(\d+)\s*[\|｜]\s*(.*)$")
+# 单次请求的安全预算是 900_000 token（输入估测 + 这次译文的输出估测）。
+# deepseek-flash / deepseek-v4-pro 上下文约 1_000_000，输出上限 384_000（393_216）。
+# 非思考模式省略 max_tokens 时接口默认只有 8_192，整部影片的译文会在中途截断，
+# 所以放得下的请求把 max_tokens 提到 262_144，并且不超过预算里剩下的额度。
+# 估测超过预算时按 600 行切块；这一块仍然放不下就降到 400 行。每块附上最多 24 条已译称呼。
+_CONTEXT_BUDGET = 900_000
+_MAX_OUTPUT_TOKENS = 262_144
+_CHUNK_LINES = 600
+_CHUNK_FLOOR = 400
+_CARRY_PAIRS = 24
+_CARRY_TOKEN_ALLOWANCE = 2_000
+_NAME_HINT = re.compile(r"(?:さん|ちゃん|くん|様|先輩|先生|君|氏|[\u30a0-\u30ff]{3,})")
+_READ_TIMEOUT = 3600.0
 _SERVICE: SubtitleService | None = None
 
 
@@ -205,46 +218,129 @@ def _safe(text: str, key: str) -> str:
 def translate_with_deepseek(
     lines: Sequence[str], settings: SubtitleSettings, *, client=None,
 ) -> list[str]:
-    """按批把日语对白译成中文。`client` 只在测试里替换。"""
+    """把一部影片的对白一次交给 DeepSeek。超长片才按大块续译。`client` 只在测试里替换。"""
     key = os.environ.get(API_KEY_ENV, "").strip()
     if not key:
         raise SubtitleGenerationError("未设置 DEEPSEEK_API_KEY")
     glossary = load_glossary(settings)
     protected: list[str] = []
     slots: list[tuple[tuple[str, str], ...]] = []
+    originals: list[str] = []
     for line in lines:
         text, slot = protect(line, glossary)
         protected.append(text)
         slots.append(slot)
-    translated: list[str] = []
+        originals.append(line)
     own = client is None
     if own:
-        from .peach_proxy import http_client
-        client = http_client(timeout=180)
+        client = _translation_client()
+    translated: list[str] = []
+    memory: list[tuple[str, str]] = []
     try:
-        for start in range(0, len(protected), 30):
-            batch = protected[start:start + 30]
-            piece = _deepseek_batch(batch, settings, glossary, key, client)
-            translated.extend(piece)
+        for start, end in _slice_plan(protected, settings, glossary):
+            piece = _deepseek_batch(
+                protected[start:end], settings, glossary, key, client, _carry_pairs(memory),
+            )
+            for source, slot, text in zip(originals[start:end], slots[start:end], piece, strict=True):
+                missing = [token for token, _target in slot if token not in text]
+                if missing:
+                    raise SubtitleGenerationError("译文丢掉了术语占位符")
+                restored = restore(text, slot)
+                translated.append(restored)
+                _remember(memory, source, restored, slot)
     finally:
         if own:
             client.close()
-    restored = []
-    for text, slot in zip(translated, slots, strict=True):
-        missing = [token for token, _target in slot if token not in text]
-        if missing:
-            raise SubtitleGenerationError("译文丢掉了术语占位符")
-        restored.append(restore(text, slot))
-    return restored
+    return translated
 
 
-def _deepseek_batch(lines, settings: SubtitleSettings, glossary, key: str, client) -> list[str]:
+def _translation_client():
+    import httpx
+
+    from .peach_proxy import http_client
+
+    # 非流式接口要等整段译文写完才返回。读超时一小时，连接仍限 30 秒。
+    return http_client(timeout=httpx.Timeout(_READ_TIMEOUT, connect=30.0))
+
+
+def _estimate_tokens(text: str) -> int:
+    """CJK 按一字一 token 估，其余按四字一 token 估。"""
+    cjk = other = 0
+    for char in text:
+        code = ord(char)
+        if 0x3040 <= code <= 0x30FF or 0x4E00 <= code <= 0x9FFF:
+            cjk += 1
+        elif not char.isspace():
+            other += 1
+    return cjk + (other + 3) // 4
+
+
+def _fits(lines: Sequence[str], settings: SubtitleSettings, glossary, extra: int) -> bool:
+    system = style_prompt(settings, glossary)
+    user = _numbered(lines)
+    incoming = _estimate_tokens(system) + _estimate_tokens(user) + extra + 32
+    needed = min(_MAX_OUTPUT_TOKENS, max(8_192, _estimate_tokens(user) + len(lines) * 8))
+    return incoming + needed <= _CONTEXT_BUDGET
+
+
+def _slice_plan(lines: Sequence[str], settings: SubtitleSettings, glossary) -> list[tuple[int, int]]:
+    count = len(lines)
+    if count == 0:
+        return []
+    if _fits(lines, settings, glossary, 0):
+        return [(0, count)]
+    slices: list[tuple[int, int]] = []
+    start = 0
+    while start < count:
+        room = count - start
+        size = min(_CHUNK_LINES, room)
+        extra = _CARRY_TOKEN_ALLOWANCE if start else 0
+        if size > _CHUNK_FLOOR and not _fits(lines[start:start + size], settings, glossary, extra):
+            size = min(_CHUNK_FLOOR, room)
+        slices.append((start, start + size))
+        start += size
+    return slices
+
+
+def _max_tokens_for(system: str, user: str) -> int:
+    incoming = _estimate_tokens(system) + _estimate_tokens(user) + 32
+    room = _CONTEXT_BUDGET - incoming
+    if room >= _MAX_OUTPUT_TOKENS:
+        return _MAX_OUTPUT_TOKENS
+    if room >= 8_192:
+        return room
+    return _MAX_OUTPUT_TOKENS
+
+
+def _remember(memory: list[tuple[str, str]], source: str, target: str, slot) -> None:
+    if slot or not target.strip() or not _NAME_HINT.search(source):
+        return
+    source, target = " ".join(source.split()), " ".join(target.split())
+    if not source or not target or len(source) > 80 or len(target) > 80:
+        return
+    memory.append((source, target))
+
+
+def _carry_pairs(memory: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+    chosen: dict[str, str] = {}
+    for source, target in memory:
+        chosen.pop(source, None)
+        chosen[source] = target
+    return list(chosen.items())[-_CARRY_PAIRS:]
+
+
+def _deepseek_batch(lines, settings: SubtitleSettings, glossary, key: str, client, carry=()) -> list[str]:
+    system = style_prompt(settings, glossary)
+    user = _numbered(lines, carry)
     payload = {
         "model": settings.deepseek_model,
         "temperature": 0.3,
+        # 当前接口默认开启思考。思考模式下 temperature 不生效，推理还会占掉输出额度。
+        "thinking": {"type": "disabled"},
+        "max_tokens": _max_tokens_for(system, user),
         "messages": [
-            {"role": "system", "content": style_prompt(settings, glossary)},
-            {"role": "user", "content": _numbered(lines)},
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ],
     }
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -267,9 +363,17 @@ def _deepseek_batch(lines, settings: SubtitleSettings, glossary, key: str, clien
     raise SubtitleGenerationError(last)
 
 
-def _numbered(lines: Sequence[str]) -> str:
+def _numbered(lines: Sequence[str], carry: Sequence[tuple[str, str]] = ()) -> str:
+    intro = (
+        "下面是同一部影片按时间排列的对白。"
+        "把每一行日语译成一行口语简体中文，称呼和关系与前后文一致。"
+        "保持行数，每行以「编号|」开头。"
+    )
+    if carry:
+        rows = "\n".join(f"{source} → {target}" for source, target in carry)
+        intro += "\n已确定的译法保持不变，这些行不要再次输出：\n" + rows
     body = "\n".join(f"{index}|{text}" for index, text in enumerate(lines, 1))
-    return "把下面每一行日语译成一行简体中文。保持行数，每行以「编号|」开头。\n" + body
+    return intro + "\n" + body
 
 
 def load_whisper(settings: SubtitleSettings, download_root: Path):

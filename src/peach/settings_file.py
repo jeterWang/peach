@@ -215,13 +215,13 @@ class SubtitleSettings:
     """日语转写后，用 DeepSeek 生成中文字幕。
 
     密钥只读环境变量 `DEEPSEEK_API_KEY`，不进这个文件。默认关闭：打开后会对还没有
-    中文字幕的影片调用外部接口。
+    中文字幕的影片调用外部接口。默认模型是当前接口的 `deepseek-flash`。
     """
 
     enabled: bool = False
     model: str = "kotoba-tech/kotoba-whisper-v2.0-faster"
     device: str = "cpu"
-    deepseek_model: str = "deepseek-chat"
+    deepseek_model: str = "deepseek-flash"
     deepseek_url: str = "https://api.deepseek.com/chat/completions"
     glossary: str = ""
     system_prompt: str = ""
@@ -797,6 +797,7 @@ def render(config: PeachConfig) -> str:
         "# model 是 faster-whisper 能加载的 CTranslate2 仓库或模型名，默认是 kotoba-whisper。",
         "# device 只能是 cpu 或 cuda。glossary 是可选的术语表路径，空着用内置称呼表。",
         "# system_prompt 留空时用内置的口语中文字幕提示。",
+        "# deepseek_model 默认 deepseek-flash，可改成 deepseek-v4-pro 或其他模型名。",
     ]
     lines += _render_pairs({
         "enabled": config.subtitles.enabled,

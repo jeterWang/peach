@@ -4,7 +4,7 @@
 
 日语识别用 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) `1.2.1`（MIT）加载 [kotoba-tech/kotoba-whisper-v2.0-faster](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0-faster)。这是 kotoba-whisper v2.0 的官方 CTranslate2 权重，`WhisperModel.transcribe(..., language="ja")` 可以直接用。ReazonSpeech 是另一套运行时，不能装进 faster-whisper，所以不采用。可选依赖组是 `asr`，默认安装不带它。PyAV 钉在 `av==18.1.0`：1.2.1 的 `decode_audio` 把 `metadata_errors` 传给 `av.open`，PyAV 19 已去掉这个参数，Windows 上会在解码时 `TypeError`。18.1.0 仍接受该参数，并提供 Windows x64 与 Python 3.14 可用的轮子。
 
-日语到中文不用 Whisper 的 `translate` 任务：那个任务只产出英语。译文调用 DeepSeek 的 `https://api.deepseek.com/chat/completions`（模型 `deepseek-chat`），密钥只来自环境变量 `DEEPSEEK_API_KEY`。请求沿用 `peach_proxy.http_client`。称呼和角色词用可配置术语表先换成占位符，译完再换回指定中文，避免模型改写专名。系统提示要求口语字幕，不另引本地机器翻译包。
+日语到中文不用 Whisper 的 `translate` 任务：那个任务只产出英语。译文调用 DeepSeek 的 `https://api.deepseek.com/chat/completions`（默认模型 `deepseek-flash`，配置可换成 `deepseek-v4-pro`），密钥只来自环境变量 `DEEPSEEK_API_KEY`。一部影片的对白放进同一次 chat completion，`max_tokens` 为 262144，并关闭思考模式，让 `temperature` 生效、输出额度留给译文。输入估测加上输出上限超过 900000 token 时，按 600 行切块，单块仍超出则用 400 行，后一块附上最多 24 条已译称呼。请求沿用 `peach_proxy.http_client`，读超时一小时。称呼和角色词用可配置术语表先换成占位符，译完再换回指定中文，避免模型改写专名。系统提示要求口语字幕，同一部片子里的称呼和关系保持一致，不另引本地机器翻译包。
 
 字幕文件仍是正片旁边的 `.chs.srt`，配对、WebVTT 和播放器文本轨沿用 `subtitles` 与 `/api/assets/{id}/subtitles`。已有中文外挂或 ffprobe 能确认的内嵌中文轨不生成。
 

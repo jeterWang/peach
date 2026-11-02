@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from peach import settings_file, subtitle_generation as gen
 from peach.settings_file import SettingsFileError, SubtitleSettings
 from peach.subtitle_generation import (
-    SubtitleService, VideoFile, load_glossary, parse_numbered, protect, restore,
+    SubtitleService, load_glossary, parse_numbered, protect, restore,
     row_is_chinese, subtitle_tag_is_chinese, to_srt, translate_with_deepseek,
     videos_without_chinese,
 )
@@ -89,7 +89,11 @@ class CaptionTests(unittest.TestCase):
         self.assertNotIn("test-key-not-a-secret", json.dumps(seen["json"]))
         self.assertIn("成人影片", seen["json"]["messages"][0]["content"])
         self.assertIn("口语", seen["json"]["messages"][0]["content"])
-        self.assertEqual(seen["json"]["model"], "deepseek-chat")
+        self.assertEqual(seen["json"]["model"], "deepseek-flash")
+        self.assertEqual(seen["json"]["temperature"], 0.3)
+        self.assertEqual(seen["json"]["max_tokens"], gen._MAX_OUTPUT_TOKENS)
+        self.assertEqual(seen["json"]["thinking"], {"type": "disabled"})
+        self.assertIn("称呼", seen["json"]["messages"][0]["content"])
 
     def test_missing_key_is_reported_without_calling_the_network(self):
         previous = os.environ.pop(gen.API_KEY_ENV, None)
@@ -100,6 +104,185 @@ class CaptionTests(unittest.TestCase):
             if previous is not None:
                 os.environ[gen.API_KEY_ENV] = previous
         self.assertIn("DEEPSEEK_API_KEY", str(caught.exception))
+
+    def test_one_film_is_one_request_and_keeps_glossary_placeholders(self):
+        lines = [f"セリフ{index}" for index in range(80)]
+        lines[3] = "先輩、こっち"
+        calls = []
+
+        class Client:
+            def post(self, url, json, headers):
+                calls.append(json)
+                numbered = []
+                for item in json["messages"][1]["content"].splitlines():
+                    match = gen._NUMBERED.match(item.strip())
+                    if match:
+                        numbered.append(f"{match.group(1)}|{match.group(2)}")
+                return SimpleNamespace(status_code=200, json=lambda body="\n".join(numbered): {
+                    "choices": [{"message": {"content": body}}]})
+
+            def close(self):
+                pass
+
+        previous = os.environ.get(gen.API_KEY_ENV)
+        os.environ[gen.API_KEY_ENV] = "test-key-not-a-secret"
+        try:
+            result = translate_with_deepseek(lines, SubtitleSettings(), client=Client())
+        finally:
+            if previous is None:
+                os.environ.pop(gen.API_KEY_ENV, None)
+            else:
+                os.environ[gen.API_KEY_ENV] = previous
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result[3], "前辈、こっち")
+        self.assertEqual(len(result), 80)
+        user = calls[0]["messages"][1]["content"]
+        self.assertIn("80|セリフ79", user)
+        self.assertIn("同一部影片", user)
+        self.assertNotIn("→", user)
+
+    def test_configured_model_overrides_the_default(self):
+        seen = {}
+
+        class Client:
+            def post(self, url, json, headers):
+                seen["model"] = json["model"]
+                return SimpleNamespace(status_code=200, json=lambda: {
+                    "choices": [{"message": {"content": "1|甲"}}]})
+
+            def close(self):
+                pass
+
+        previous = os.environ.get(gen.API_KEY_ENV)
+        os.environ[gen.API_KEY_ENV] = "test-key-not-a-secret"
+        try:
+            translate_with_deepseek(
+                ["あ"], SubtitleSettings(deepseek_model="deepseek-v4-pro"), client=Client(),
+            )
+        finally:
+            if previous is None:
+                os.environ.pop(gen.API_KEY_ENV, None)
+            else:
+                os.environ[gen.API_KEY_ENV] = previous
+        self.assertEqual(seen["model"], "deepseek-v4-pro")
+
+    def test_oversized_dialogue_uses_large_chunks_and_carries_names(self):
+        lines = [f"マリアさん{index}" for index in range(1000)]
+        calls = []
+
+        class Client:
+            def post(self, url, json, headers):
+                calls.append(json["messages"][1]["content"])
+                numbered = []
+                for item in json["messages"][1]["content"].splitlines():
+                    match = gen._NUMBERED.match(item.strip())
+                    if match:
+                        text = match.group(2).replace("マリアさん", "玛丽亚")
+                        numbered.append(f"{match.group(1)}|{text}")
+                return SimpleNamespace(status_code=200, json=lambda body="\n".join(numbered): {
+                    "choices": [{"message": {"content": body}}]})
+
+            def close(self):
+                pass
+
+        previous = os.environ.get(gen.API_KEY_ENV)
+        os.environ[gen.API_KEY_ENV] = "test-key-not-a-secret"
+        original = gen._CONTEXT_BUDGET
+        gen._CONTEXT_BUDGET = 1
+        try:
+            result = translate_with_deepseek(lines, SubtitleSettings(), client=Client())
+        finally:
+            gen._CONTEXT_BUDGET = original
+            if previous is None:
+                os.environ.pop(gen.API_KEY_ENV, None)
+            else:
+                os.environ[gen.API_KEY_ENV] = previous
+        sizes = []
+        for content in calls:
+            sizes.append(sum(1 for item in content.splitlines() if gen._NUMBERED.match(item.strip())))
+        self.assertEqual(sizes, [400, 400, 200])
+        self.assertNotIn("→", calls[0])
+        self.assertIn("玛丽亚", calls[1])
+        self.assertIn("→", calls[1])
+        self.assertTrue(result[0].startswith("玛丽亚"))
+        self.assertEqual(len(result), 1000)
+
+    def test_chunks_stay_at_600_lines_when_that_block_fits(self):
+        lines = [f"マリアさん{index}" for index in range(1000)]
+        settings = SubtitleSettings()
+        glossary = load_glossary(settings)
+
+        def budget(sample, extra=0):
+            system = gen.style_prompt(settings, glossary)
+            user = gen._numbered(sample)
+            incoming = gen._estimate_tokens(system) + gen._estimate_tokens(user) + extra + 32
+            needed = min(gen._MAX_OUTPUT_TOKENS, max(8_192, gen._estimate_tokens(user) + len(sample) * 8))
+            return incoming + needed
+
+        self.assertLess(budget(lines[:600]), budget(lines))
+        calls = []
+
+        class Client:
+            def post(self, url, json, headers):
+                calls.append(json["messages"][1]["content"])
+                numbered = [
+                    f"{match.group(1)}|{match.group(2)}"
+                    for item in json["messages"][1]["content"].splitlines()
+                    if (match := gen._NUMBERED.match(item.strip()))
+                ]
+                return SimpleNamespace(status_code=200, json=lambda body="\n".join(numbered): {
+                    "choices": [{"message": {"content": body}}]})
+
+            def close(self):
+                pass
+
+        previous = os.environ.get(gen.API_KEY_ENV)
+        os.environ[gen.API_KEY_ENV] = "test-key-not-a-secret"
+        original = gen._CONTEXT_BUDGET
+        gen._CONTEXT_BUDGET = budget(lines[:600])
+        try:
+            translate_with_deepseek(lines, settings, client=Client())
+        finally:
+            gen._CONTEXT_BUDGET = original
+            if previous is None:
+                os.environ.pop(gen.API_KEY_ENV, None)
+            else:
+                os.environ[gen.API_KEY_ENV] = previous
+        sizes = [sum(1 for item in content.splitlines() if gen._NUMBERED.match(item.strip())) for content in calls]
+        self.assertEqual(sizes, [600, 400])
+        self.assertIn("→", calls[1])
+
+    def test_translation_client_waits_for_a_full_film(self):
+        seen = {}
+
+        class Client:
+            def post(self, url, json, headers):
+                return SimpleNamespace(status_code=200, json=lambda: {
+                    "choices": [{"message": {"content": "1|甲"}}]})
+
+            def close(self):
+                seen["closed"] = True
+
+        def fake_http_client(**kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            return Client()
+
+        from peach import peach_proxy
+        original = peach_proxy.http_client
+        peach_proxy.http_client = fake_http_client
+        previous = os.environ.get(gen.API_KEY_ENV)
+        os.environ[gen.API_KEY_ENV] = "test-key-not-a-secret"
+        try:
+            self.assertEqual(translate_with_deepseek(["あ"], SubtitleSettings()), ["甲"])
+        finally:
+            peach_proxy.http_client = original
+            if previous is None:
+                os.environ.pop(gen.API_KEY_ENV, None)
+            else:
+                os.environ[gen.API_KEY_ENV] = previous
+        self.assertTrue(seen["closed"])
+        self.assertGreaterEqual(seen["timeout"].read, gen._READ_TIMEOUT)
+        self.assertEqual(seen["timeout"].connect, 30)
 
     def test_chinese_tags_and_sidecar_names_match_existing_detection(self):
         self.assertTrue(subtitle_tag_is_chinese("zh-CN", ""))
@@ -135,6 +318,7 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(loaded.subtitles.enabled)
         self.assertEqual(loaded.subtitles.device, "cuda")
         self.assertEqual(loaded.subtitles.model, SubtitleSettings().model)
+        self.assertEqual(loaded.subtitles.deepseek_model, "deepseek-flash")
         tree.write(settings_file.render(loaded))
         self.assertTrue(tree.load().subtitles.enabled)
         tree.write("[subtitles]\ndeepseek_url = 'http://api.deepseek.com/chat/completions'\n")
@@ -145,8 +329,12 @@ class SettingsTests(unittest.TestCase):
     def test_environment_turns_generation_on(self):
         tree = TempTree()
         self.addCleanup(tree.close)
-        loaded = tree.load({"PEACH_SUBTITLES_ENABLED": "true", "PEACH_SUBTITLES_DEVICE": "cpu"})
+        loaded = tree.load({
+            "PEACH_SUBTITLES_ENABLED": "true", "PEACH_SUBTITLES_DEVICE": "cpu",
+            "PEACH_SUBTITLES_DEEPSEEK_MODEL": "deepseek-v4-pro",
+        })
         self.assertTrue(loaded.subtitles.enabled)
+        self.assertEqual(loaded.subtitles.deepseek_model, "deepseek-v4-pro")
 
 
 class GenerationTests(unittest.TestCase):
