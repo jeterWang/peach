@@ -12,18 +12,21 @@ CTranslate2 权重），`language` 固定为 `ja`，并丢掉无语音、重复�
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 from filelock import FileLock
 
@@ -483,9 +486,8 @@ def load_whisper(settings: SubtitleSettings, download_root: Path):
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise SubtitleGenerationError("未安装日语转写组件（可选依赖 asr）") from exc
-    compute = "float16" if settings.device == "cuda" else "int8"
     return WhisperModel(
-        settings.model, device=settings.device, compute_type=compute,
+        settings.model, device=settings.device, compute_type=compute_type(settings),
         download_root=str(download_root),
     )
 
@@ -512,7 +514,8 @@ def segment_kept(segment) -> bool:
     return True
 
 
-def cues_from_model(model, wav: Path, settings: SubtitleSettings):
+def transcribe_options(settings: SubtitleSettings) -> dict:
+    """faster-whisper 的转写参数。进程内和外部解释器共用这一份。"""
     options = {
         "language": "ja",
         "vad_filter": True,
@@ -523,7 +526,19 @@ def cues_from_model(model, wav: Path, settings: SubtitleSettings):
     }
     if "kotoba" in settings.model.casefold():
         options["chunk_length"] = 15
-    segments, _info = model.transcribe(str(wav), **options)
+    return options
+
+
+def compute_type(settings: SubtitleSettings) -> str:
+    return "float16" if settings.device == "cuda" else "int8"
+
+
+def cues_from_model(model, wav: Path, settings: SubtitleSettings):
+    segments, _info = model.transcribe(str(wav), **transcribe_options(settings))
+    return cues_from_segments(segments)
+
+
+def cues_from_segments(segments) -> list[tuple[float, float, str]]:
     cues = []
     for segment in segments:
         if not segment_kept(segment):
@@ -889,6 +904,8 @@ class SubtitleService:
         self._swept = False
         self._model = None
         self._model_key: tuple[str, str] | None = None
+        self._asr = None
+        self._asr_python: Path | None = None
         self._enabled: bool | None = None
         self._current_id: int | None = None
         self._ignored: set[int] = set()
@@ -994,6 +1011,11 @@ class SubtitleService:
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2)
+        asr = self._asr
+        self._asr = None
+        self._asr_python = None
+        if asr is not None:
+            asr.close()
 
     def wake(self) -> None:
         self._wake.set()
@@ -1214,11 +1236,60 @@ class SubtitleService:
     def _transcribe(self, wav: Path, settings: SubtitleSettings):
         if self._transcriber is not None:
             return self._transcriber(wav, settings)
+        python, problem = self._resolve_asr_python(settings)
+        if problem:
+            raise SubtitleGenerationError(problem)
+        if python is not None:
+            return self._transcribe_external(python, wav, settings)
+        if not self._whisper_importable():
+            from .asr_runtime import MISSING
+            raise SubtitleGenerationError(MISSING)
         key = (settings.model, settings.device)
         if self._model is None or self._model_key != key:
             self._model = load_whisper(settings, self.root / "models")
             self._model_key = key
         return cues_from_model(self._model, wav, settings)
+
+    def _transcribe_external(self, python: Path, wav: Path, settings: SubtitleSettings):
+        from .asr_runtime import AsrProcess, worker_script
+        if self._asr is None or self._asr_python != python:
+            if self._asr is not None:
+                self._asr.close()
+            self._asr = AsrProcess(
+                python, worker_script(), drop_path_prefix=self._frozen_root())
+            self._asr_python = python
+        records = self._asr.transcribe({
+            "wav": str(wav),
+            "model": settings.model,
+            "device": settings.device,
+            "compute_type": compute_type(settings),
+            "download_root": str(self.root / "models"),
+            "options": transcribe_options(settings),
+        })
+        return cues_from_segments(SimpleNamespace(**record) for record in records)
+
+    def _resolve_asr_python(self, settings: SubtitleSettings) -> tuple[Path | None, str]:
+        from .asr_runtime import resolve_asr_python
+        roots = () if getattr(sys, "frozen", False) else (Path(__file__).resolve().parents[2],)
+        return resolve_asr_python(
+            environ=os.environ,
+            executable=Path(sys.executable),
+            configured=settings.asr_python,
+            extra_roots=roots,
+            current=Path(sys.executable),
+            current_importable=self._whisper_importable(),
+            frozen=bool(getattr(sys, "frozen", False)),
+        )
+
+    def _whisper_importable(self) -> bool:
+        if getattr(sys, "frozen", False):
+            return False
+        return importlib.util.find_spec("faster_whisper") is not None
+
+    def _frozen_root(self) -> Path | None:
+        if not getattr(sys, "frozen", False):
+            return None
+        return Path(sys.executable).resolve().parent
 
     def _resolve(self, asset_id: int) -> VideoFile | None:
         if self.media is None:
@@ -1255,11 +1326,12 @@ class SubtitleService:
         if not os.environ.get(API_KEY_ENV, "").strip():
             return "未设置 DEEPSEEK_API_KEY"
         if self._transcriber is None:
-            try:
-                import importlib
-                importlib.import_module("faster_whisper")
-            except ImportError:
-                return "未安装日语转写组件（可选依赖 asr）"
+            python, problem = self._resolve_asr_python(settings)
+            if problem:
+                return problem
+            if python is None and not self._whisper_importable():
+                from .asr_runtime import MISSING
+                return MISSING
         return ""
 
     def _set(self, asset_id: int, status: str, message: str) -> None:

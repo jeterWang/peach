@@ -8,6 +8,8 @@
 
 中文仍是正片旁边的 `.chs.srt`，校对后的日语是同目录的 `.ja.srt`。配对、WebVTT 和播放器文本轨沿用 `subtitles` 与 `/api/assets/{id}/subtitles`。目录不可写时两份都放在字幕服务根的 `tracks/`。已有中文外挂或 ffprobe 能确认的内嵌中文轨不生成。标记 JSON 的 `source` 为 `sidecar` 或 `asr`。
 
+Windows 安装包不把 `asr` 或 CUDA 运行库打进去。faster-whisper 1.2.1 的 Windows CUDA 轮子会带上约 2GB 的 `nvidia` 包，和大约 188MB 的安装包放在一起不合适，许可证也要单独处理。冻结的服务进程发现本机已有解释器后，用标准库 `subprocess` 跑随包的 `asr_worker.py`（`CREATE_NO_WINDOW`，挂在托盘的 Job 里）。子进程在导入前把该虚拟环境的 `nvidia/*/bin` 加进 DLL 搜索路径，沿用 ctranslate2 对 pip 发行的 NVIDIA 库的加载方式。当前进程能导入 faster-whisper 时仍在进程内加载，不另起进程。取舍见 [ADR-0131](adr/0131-windows-asr-stays-outside-the-installer.md)。
+
 ## 跨平台任务资源计量
 
 继续使用 psutil 7.2.2 读取进程 CPU 时间和身份。该版本的 macOS 线程列表使用序号，不能与 Python 原生线程 ID 对应；因此使用系统 `libproc` 的 `PROC_PIDTHREADID64INFO` 取得指定线程的纳秒时间，接口与单位见 [XNU 实现](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/bsd_kern.c)。Linux 的可用 CPU 容量复用亲和性、控制组成员和挂载信息，按可见 cgroup v1/v2 配额归一化。

@@ -217,11 +217,14 @@ class SubtitleSettings:
     密钥只读环境变量 `DEEPSEEK_API_KEY`，不进这个文件。默认关闭：打开后会对还没有
     中文字幕的影片调用外部接口。默认模型是当前接口的 `deepseek-flash`。
     `polish_transcript` 为真时，翻译前先把整片日语识别校对一遍。
+    `asr_python` 指向已安装可选依赖 `asr` 的解释器。安装版自己不带 CUDA 运行库，
+    留空时再按环境变量和旁边的 `.venv` 寻找。
     """
 
     enabled: bool = False
     model: str = "kotoba-tech/kotoba-whisper-v2.0-faster"
     device: str = "cpu"
+    asr_python: str = ""
     deepseek_model: str = "deepseek-flash"
     deepseek_url: str = "https://api.deepseek.com/chat/completions"
     glossary: str = ""
@@ -466,6 +469,8 @@ def _merge(
             subtitle_table, "model", subtitle_defaults.model, path, "subtitles."),
         device=_string(
             subtitle_table, "device", subtitle_defaults.device, path, "subtitles."),
+        asr_python=_string(
+            subtitle_table, "asr_python", subtitle_defaults.asr_python, path, "subtitles."),
         deepseek_model=_string(
             subtitle_table, "deepseek_model", subtitle_defaults.deepseek_model, path, "subtitles."),
         deepseek_url=_string(
@@ -507,6 +512,9 @@ def _validate_subtitles(settings: SubtitleSettings, path: Path) -> SubtitleSetti
     """模型、设备和 DeepSeek 地址在读配置时就拒绝，避免队列跑起来才发现写错。"""
     if settings.device not in {"cpu", "cuda"}:
         raise _fail(path, "`subtitles.device` 只能是 cpu 或 cuda")
+    asr_python = settings.asr_python.strip()
+    if any(char in asr_python for char in "\r\n\x00") or len(asr_python) > 1000:
+        raise _fail(path, "`subtitles.asr_python` 必须是解释器路径")
     model = settings.model.strip()
     if not model or any(char in model for char in "\r\n") or len(model) > 300:
         raise _fail(path, "`subtitles.model` 必须是模型名或仓库路径")
@@ -516,7 +524,8 @@ def _validate_subtitles(settings: SubtitleSettings, path: Path) -> SubtitleSetti
     if parsed.scheme != "https" or not parsed.hostname:
         raise _fail(path, "`subtitles.deepseek_url` 必须是 https 地址")
     return replace(
-        settings, model=model, deepseek_model=settings.deepseek_model.strip(),
+        settings, model=model, asr_python=asr_python,
+        deepseek_model=settings.deepseek_model.strip(),
         deepseek_url=settings.deepseek_url.strip(), glossary=settings.glossary.strip(),
     )
 
@@ -803,6 +812,8 @@ def render(config: PeachConfig) -> str:
         "# 密钥只放在环境变量 DEEPSEEK_API_KEY，不要写进这个文件。",
         "# model 是 faster-whisper 能加载的 CTranslate2 仓库或模型名，默认是 kotoba-whisper。",
         "# device 只能是 cpu 或 cuda。glossary 是可选的术语表路径，空着用内置称呼表。",
+        "# asr_python 留空时，安装版再看 PEACH_ASR_PYTHON、PEACH_ASR_HOME 和旁边的 .venv。",
+        "# 填写已安装 asr 的 python.exe。安装包不携带 NVIDIA CUDA 运行库。",
         "# system_prompt 留空时用内置的口语中文字幕提示。",
         "# deepseek_model 默认 deepseek-flash，可改成 deepseek-v4-pro 或其他模型名。",
         "# polish_transcript 为 true 时，先校对整片日语识别，再翻译。",
@@ -811,6 +822,7 @@ def render(config: PeachConfig) -> str:
         "enabled": config.subtitles.enabled,
         "model": config.subtitles.model,
         "device": config.subtitles.device,
+        "asr_python": config.subtitles.asr_python,
         "deepseek_model": config.subtitles.deepseek_model,
         "deepseek_url": config.subtitles.deepseek_url,
         "glossary": config.subtitles.glossary,

@@ -148,11 +148,18 @@ if ($LASTEXITCODE -ne 0) { throw 'Runtime resource manifest is incomplete.' }
 foreach ($ResourceEntry in $ResourceEntries) {
     $ResourceArguments += @('--add-data', $ResourceEntry)
 }
+# 转写脚本随包走，供本机已有的 ASR 虚拟环境执行。不把 faster-whisper / CUDA 打进安装包。
+$AsrWorker = Join-Path $ProjectRoot 'src\peach\asr_worker.py'
+if (-not (Test-Path -LiteralPath $AsrWorker -PathType Leaf)) {
+    throw "ASR worker script is missing: $AsrWorker"
+}
+$ResourceArguments += @('--add-data', "${AsrWorker};.")
 & $Python -m PyInstaller --noconfirm --clean @BuildMode @ResourceArguments --windowed --name Peach `
     --distpath $BuildDestination --workpath $WorkPath --specpath $BuildPath `
     --paths (Join-Path $ProjectRoot 'src') --python-option 'X utf8' `
     --collect-all curl_cffi --collect-all resvg_py `
     --copy-metadata sentry-sdk `
+    --exclude-module faster_whisper --exclude-module ctranslate2 `
     --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto `
     --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto `
     --hidden-import uvicorn.lifespan.on `

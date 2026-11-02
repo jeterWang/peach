@@ -74,7 +74,7 @@ SCOPES: dict[str, tuple[str, ...]] = {
               "test_providers.py", "test_segments.py", "test_streaming.py", "test_stream_lifecycle.py",
               "test_subtitles.py", "test_transcodes.py", "test_hardware_transcode.py", "test_strm.py",
               "test_guangya_sources.py", "test_media_sources.py", "test_smb*.py",
-              "test_subtitle_generation.py"),
+              "test_subtitle_generation.py", "test_asr_runtime.py"),
     "sync": ("test_sync*.py", "test_platform.py", "test_mount.py", "test_tray*.py", "test_macos_standalone.py", "test_log_retention.py",
              "test_mdns.py", "test_netwatch.py", "test_certs.py",
              "test_review_mirror.py", "test_runtime_prepare.py"),
@@ -130,7 +130,7 @@ SCOPES: dict[str, tuple[str, ...]] = {
                 "test_cloudflared_packaging.py", "test_tunnel.py", "test_process_job.py",
                 "test_ffmpeg_build.py", "test_ffmpeg_bundle.py", "test_untrunc_build.py", "test_macos_media.py",
                 "test_media_tool_import.py", "test_seed_corrections.py", "test_face_models_bundle.py",
-                "test_subtitle_generation.py"),
+                "test_subtitle_generation.py", "test_asr_runtime.py"),
     # 前端 island 层（ADR-0022）。产物与源码的断言不需要 Node；vitest 那部分在没有
     # npm 时自己跳过，所以这个域在任何机器上都能跑，`full` 也就自动包含它。
     # `test_web_perf.py` 两个域都登记：压缩与 ETag 是 API 交付（catalog），
@@ -159,7 +159,8 @@ SCOPES: dict[str, tuple[str, ...]] = {
                   "test_cli.py", "test_server.py", "test_versioning.py", "test_frontend_build.py", "test_frontend_preflight.py",
                   "test_cloudflared_packaging.py", "test_desktop_installer.py",
                   "test_ffmpeg_build.py", "test_ffmpeg_bundle.py", "test_untrunc_build.py", "test_macos_media.py",
-                  "test_face_models_bundle.py", "test_metadata_amane_bridge.py", "test_release_candidate.py", "test_media_build_cache.py"),
+                  "test_face_models_bundle.py", "test_metadata_amane_bridge.py", "test_release_candidate.py", "test_media_build_cache.py",
+                  "test_asr_runtime.py"),
 }
 
 SCOPE_TEST_IDS: dict[str, tuple[str, ...]] = {

@@ -605,7 +605,7 @@ deepseek_url = "https://api.deepseek.com/chat/completions"
 polish_transcript = true
 ```
 
-`device` 只能是 `cpu` 或 `cuda`。`deepseek_model` 默认是 `deepseek-flash`，也可以写成 `deepseek-v4-pro` 或其他模型名。`polish_transcript` 默认开启：先整片校对日语，再整片翻译。校对和翻译都是一次请求，输出上限都是 262144 token。对白估测超过约 90 万 token（输入加上输出上限）时，改为 600 行一块，单块仍放不下则用 400 行；校对块带上已改过的短称呼，翻译块带上已译称呼。`glossary` 可指向一份 UTF-8 术语表，每行 `日文<制表符>中文`，`#` 开头是注释；同名日文覆盖内置称呼，只在翻译时替换。`system_prompt` 留空时用内置提示：口语、同一部片子里的称呼和关系保持一致、不改写成书面语。识别垃圾、碎句或不通的胡话按前后文推断原意，写成自然的成人片口语，不照译错词，也不编上下文里没有的情节；空白行保持空白。环境变量 `PEACH_SUBTITLES_ENABLED`、`PEACH_SUBTITLES_MODEL`、`PEACH_SUBTITLES_DEVICE`、`PEACH_SUBTITLES_DEEPSEEK_MODEL`、`PEACH_SUBTITLES_URL`、`PEACH_SUBTITLES_POLISH` 覆盖文件里的对应项。
+`device` 只能是 `cpu` 或 `cuda`。`deepseek_model` 默认是 `deepseek-flash`，也可以写成 `deepseek-v4-pro` 或其他模型名。`polish_transcript` 默认开启：先整片校对日语，再整片翻译。校对和翻译都是一次请求，输出上限都是 262144 token。对白估测超过约 90 万 token（输入加上输出上限）时，按 600 行一块，单块仍放不下则用 400 行；校对块带上已改过的短称呼，翻译块带上已译称呼。`glossary` 可指向一份 UTF-8 术语表，每行 `日文<制表符>中文`，`#` 开头是注释；同名日文覆盖内置称呼，只在翻译时替换。`system_prompt` 留空时用内置提示：口语、同一部片子里的称呼和关系保持一致，保留口语。识别垃圾、碎句或不通的胡话按前后文推断原意，写成自然的成人片口语，不照译错词，也不编上下文里没有的情节；空白行保持空白。环境变量 `PEACH_SUBTITLES_ENABLED`、`PEACH_SUBTITLES_MODEL`、`PEACH_SUBTITLES_DEVICE`、`PEACH_SUBTITLES_DEEPSEEK_MODEL`、`PEACH_SUBTITLES_URL`、`PEACH_SUBTITLES_POLISH` 覆盖文件里的对应项。
 
 DeepSeek 密钥只读环境变量 `DEEPSEEK_API_KEY`，不要写进 `config.toml`、账本或日志。改完用户环境变量后要重新打开终端，再启动 Peach，进程才看得到。
 
@@ -619,16 +619,31 @@ uv sync --locked --extra asr --python 3.14
 
 首次生成会下载 kotoba-whisper 权重（体积大约 1GB 量级，以 Hugging Face 上的文件为准），并按 DeepSeek 的用量计费。`peach serve` 起来之后，会把还没有中文外挂记录的视频排进后台队列，一部接一部处理；正在打开的那一部插到队首。队列在数据目录的 `state/subtitle-generation.json`。扫描新入库的视频也会追加。失败的一部不会在播放器轮询里自动重试；补上密钥或依赖后重新打开这部影片会再排一次「未设置 DEEPSEEK_API_KEY」。其他失败留在队列文件里，用 `POST /api/subtitles/generation/retry` 放回队首，或用 `POST /api/subtitles/generation/ignore` 移出队列。开关是 `POST /api/subtitles/generation` 的 `enabled`。
 
-安装版程序不会因为拉取这份源码而换成新代码。要用现有馆藏试这条功能：先退出正在跑的 Peach，让 `8900` 端口空出来，再用本仓库的虚拟环境指向原来的数据目录。Windows 安装版的程序在 `%LOCALAPPDATA%\Programs\Peach`，数据在 `%LOCALAPPDATA%\Peach\peach-data`。
+安装包不包含 faster-whisper，也不包含 NVIDIA CUDA 运行库。开始菜单里的 Peach 仍是日常入口：托盘拉起的 `peach serve` 没有控制台窗口，退出托盘时服务和转写子进程一起结束。转写交给本机已经装好 `asr` 的虚拟环境。在同一份 `config.toml` 里写上解释器，有 NVIDIA GPU 时把 `device` 写成 `cuda`：
 
-```powershell
-$env:PEACH_DATA_ROOT = "$env:LOCALAPPDATA\Peach\peach-data"
-$env:PEACH_FFMPEG = "$env:LOCALAPPDATA\Programs\Peach\tools\ffmpeg\bin\ffmpeg.exe"
-$env:PEACH_FFPROBE = "$env:LOCALAPPDATA\Programs\Peach\tools\ffmpeg\bin\ffprobe.exe"
-& .\.venv\Scripts\peach.exe serve --host 0.0.0.0 --port 8900
+```toml
+[subtitles]
+enabled = true
+device = "cuda"
+asr_python = '<仓库>\.venv\Scripts\python.exe'
 ```
 
-`PEACH_FFMPEG` 只在源码进程找不到 FFmpeg 时需要；数据目录或 PATH 里已有则可省略。安装目录里的文件名若不是上面这一条，在 `%LOCALAPPDATA%\Programs\Peach` 里找 `ffmpeg.exe`。`config.toml` 里如果已经写了监听地址和端口，不传 `--host` 和 `--port` 也会沿用。浏览器打开原来的地址，中文轨在生成完成后出现，不必再手动加载字幕。
+单引号里的反斜杠按字面使用。`asr_python` 留空时，再看环境变量 `PEACH_ASR_PYTHON`（解释器文件）、`PEACH_ASR_HOME`（虚拟环境根目录），以及程序或源码树旁边的 `.venv`。那个环境里需要有 `faster-whisper`；CUDA 轮子放在它的 `Lib\site-packages\nvidia\*\bin`，子进程自己把这些目录加进 DLL 搜索路径。解释器不存在，或虚拟环境里没有这个包时，配置页「应用与维护 → 中文字幕」会写出原因。改完 `asr_python` 后从托盘退出再打开。
+
+安装版托盘按 `[server]` 的 `host` 和 `port` 启动服务，不绑定 80/443。源码托盘仍使用 80/443 和本机证书。点开始菜单图标之前，退出源码托盘，并结束已经占着该端口的手工 `peach serve`。端口上若已有健康服务但不是这次托盘拉起的，托盘不会接管。
+
+在本机 Windows 上生成安装包：
+
+```powershell
+uv sync --locked --extra build --python 3.14
+# 另装 Inno Setup 6，或把 ISCC.exe 的路径放进 PEACH_ISCC。
+# 独立包还要备好 FFmpeg、untrunc、cloudflared 和人脸模型，脚本会在打包前检查。
+powershell -File scripts/build_windows.ps1 -Installer
+```
+
+产物是 `dist\Peach-<版本>-windows-x64-setup.exe`。运行这个安装包覆盖安装到 `%LOCALAPPDATA%\Programs\Peach`。不要把新文件手工拷进安装目录。数据目录 `%LOCALAPPDATA%\Peach\peach-data` 保持不动。装完从开始菜单打开 Peach。
+
+源码调试仍可在仓库里执行 `uv sync --locked --extra asr --python 3.14`，再用 `.venv\Scripts\peach.exe serve`。这时解释器自己能导入 faster-whisper，转写留在服务进程里。`PEACH_FFMPEG` 只在源码进程找不到 FFmpeg 时需要。
 
 ## 文件整理
 
@@ -747,7 +762,8 @@ curl -s --noproxy '*' -o /dev/null -w '%{http_code}\n' https://peach.local/healt
 
 - 构建入口是 `scripts/build_windows.ps1`：先用 `scripts/generate_brand_assets.py` 生成方形 Logo 与多尺寸 `.ico`，再构建单一的 `dist/Peach/Peach.exe`。不带参数运行是托盘，`serve`／`migrate` 运行 CLI。
 - 对外测试包由 `.github/workflows/release.yml` 构建：`build_windows.ps1 -Standalone` 用 PyInstaller onedir 生成完整的 Windows 程序目录，压缩后由不检出源码的消费任务运行 `scripts/smoke_desktop.py`。冒烟测试会完成首次设置、以 `0.0.0.0` 重启、从本机局域网地址读 `/healthz`、确认 mDNS 已装配，并用访问密码登录。`v<__version__>` 标签与版本不一致会失败；制品验收通过后才创建 GitHub 预发布并附 SHA256。`workflow_dispatch` 只生成和验收制品。
-- 安装包由 `build_windows.ps1 -Installer` 在同一个程序目录上调 Inno Setup 6 的 `ISCC` 编译 `scripts/installer/peach.iss`，产物是 `dist/Peach-<版本>-windows-x64-setup.exe`；找 `ISCC` 的顺序是 `PEACH_ISCC`、`PATH`、两个默认安装位置。默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Peach`，可选择独立、可写且不与数据目录重叠的程序目录。覆盖安装前由随包临时运行时执行 `--installer-prepare`，通知采集任务保存进度并暂停，随后停止托盘，覆盖程序并迁移实际数据目录中的已有 Peach 数据库，最后释放安装保护。安装期间的新采集请求进入等待；安装完成或取消后，仍在运行的 Peach 会续跑，已退出则在下次启动时恢复。卸载走 `--installer-uninstall`，撤销启动项与桌面图标并保留数据。约定与 `AppId` 在 `src/peach/desktop_installer.py`。
+- 安装包由 `build_windows.ps1 -Installer` 在同一个程序目录上调 Inno Setup 6 的 `ISCC` 编译 `scripts/installer/peach.iss`，产物是 `dist/Peach-<版本>-windows-x64-setup.exe`；找 `ISCC` 的顺序是 `PEACH_ISCC`、`PATH`、两个默认安装位置。打包机先执行 `uv sync --locked --extra build`。默认安装到当前用户的 `%LOCALAPPDATA%\Programs\Peach`，可选择独立、可写且不与数据目录重叠的程序目录。用安装包覆盖安装，不要手工替换安装目录里的文件。覆盖安装前由随包临时运行时执行 `--installer-prepare`，通知采集任务保存进度并暂停，随后停止托盘，覆盖程序并迁移实际数据目录中的已有 Peach 数据库，最后释放安装保护。安装期间的新采集请求进入等待；安装完成或取消后，仍在运行的 Peach 会续跑，已退出则在下次启动时恢复。卸载走 `--installer-uninstall`，撤销启动项与桌面图标并保留数据。约定与 `AppId` 在 `src/peach/desktop_installer.py`。
+- 安装包不包含 faster-whisper 和 NVIDIA CUDA 运行库。日语转写使用本机已有虚拟环境，见「中文字幕」。构建只把 `asr_worker.py` 放进资源根，并排除 `faster_whisper` 与 `ctranslate2`。
 - 独立包构建会把固定版本的官方 `cloudflared-windows-amd64.exe` 放在 `Peach.exe` 旁边，并用 `scripts/cloudflared-windows.json` 里的 SHA-256 校验。构建前运行 `scripts/fetch_cloudflared.ps1`，或给 `build_windows.ps1 -CloudflaredPath` 一个哈希相同的文件。源码运行不携带这个二进制。
 - 每个包都带构建身份：`build_windows.ps1` 在调用 PyInstaller 前把 `{commit, version, built_at}` 写进 `build/windows/build-info.json`，再用 `--add-data` 放到包根，本机托盘与独立测试包共用。构建机没有 git 或源码不是检出时 `commit` 为 `null`，构建照常。`peach.buildinfo.frozen_build()` 只在 `sys.frozen` 时读它；文件缺失或格式不对返回 `None`，托盘照常启动，只是认为自己身份未取得。
 - PyInstaller 的资源直接在 `sys._MEIPASS` 下，没有源码树的 `src/` 这一层；打包后的 `migrate`、Web 与品牌资源都要从这里解析，不能在 `config.py` 里固定取 `parents[2]`。
