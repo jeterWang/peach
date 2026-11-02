@@ -52,6 +52,10 @@ Windows 第一次询问防火墙权限时，只勾选「专用网络」。
 
 数据保存在 `%LOCALAPPDATA%\Peach\peach-data`，和程序文件夹分开。
 
+## 日语转写
+
+安装包不包含日语转写组件，也不包含 NVIDIA CUDA 运行库。开始菜单里的 Peach 照常启动；生成中文字幕时，服务会调用本机已经准备好的虚拟环境。在数据目录的 `config.toml` 里设置 `subtitles.asr_python`（或环境变量 `PEACH_ASR_PYTHON` / `PEACH_ASR_HOME`），有显卡时把 `subtitles.device` 写成 `cuda`。解释器所在环境需要已安装可选依赖 `asr`。配置页「应用与维护 → 中文字幕」会显示找不到解释器的原因。改完路径后从托盘退出再打开。安装版按 `config.toml` 里的端口提供网页，不占用 80/443。步骤见[运行与配置](OPERATIONS.md#中文字幕)。
+
 ## 播放与 FFmpeg
 
 完整安装包和完整免安装 ZIP 均包含 FFmpeg 与 ffprobe，位于程序目录的 `tools\ffmpeg\bin`；轻量安装包会在安装时备齐工具。转码、媒体信息探测与缩略图无需额外配置。`*-update.zip` 由 Peach 更新器校验和安装，不提供手动导入入口；首次安装使用任一安装包或完整免安装包。`tools-*.zip` 由更新器或轻量安装包按需处理。

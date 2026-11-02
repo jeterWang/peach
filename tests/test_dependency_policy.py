@@ -201,6 +201,7 @@ class DependencyPolicyTests(unittest.TestCase):
             "cv2": "opencv-python-headless",
             "dmgbuild": "dmgbuild",
             "fastapi": "fastapi",
+            "faster_whisper": "faster-whisper",
             "filelock": "filelock",
             "google": "protobuf",
             "grpc": "grpcio",

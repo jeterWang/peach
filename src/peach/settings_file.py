@@ -27,6 +27,7 @@ import tomllib
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import distribution
 
@@ -210,6 +211,28 @@ class TunnelSettings:
 
 
 @dataclass(frozen=True)
+class SubtitleSettings:
+    """日语转写后，用 DeepSeek 生成中文字幕。
+
+    密钥只读环境变量 `DEEPSEEK_API_KEY`，不进这个文件。默认关闭：打开后会对还没有
+    中文字幕的影片调用外部接口。默认模型是当前接口的 `deepseek-flash`。
+    `polish_transcript` 为真时，翻译前先把整片日语识别校对一遍。
+    `asr_python` 指向已安装可选依赖 `asr` 的解释器。安装版自己不带 CUDA 运行库，
+    留空时再按环境变量和旁边的 `.venv` 寻找。
+    """
+
+    enabled: bool = False
+    model: str = "kotoba-tech/kotoba-whisper-v2.0-faster"
+    device: str = "cpu"
+    asr_python: str = ""
+    deepseek_model: str = "deepseek-flash"
+    deepseek_url: str = "https://api.deepseek.com/chat/completions"
+    glossary: str = ""
+    system_prompt: str = ""
+    polish_transcript: bool = True
+
+
+@dataclass(frozen=True)
 class PeachConfig:
     """一次合并的结果。`config.py` 把它投影成模块常量。"""
 
@@ -234,6 +257,7 @@ class PeachConfig:
     server: ServerSettings = ServerSettings()
     replication: ReplicationSettings = ReplicationSettings()
     tunnel: TunnelSettings = TunnelSettings()
+    subtitles: SubtitleSettings = SubtitleSettings()
 
     @property
     def configured(self) -> bool:
@@ -436,6 +460,29 @@ def _merge(
             tunnel_table, "hostname", tunnel_defaults.hostname, path, "tunnel."),
     )
 
+    subtitle_table = _table(document, "subtitles", path)
+    subtitle_defaults = SubtitleSettings()
+    subtitles = _validate_subtitles(SubtitleSettings(
+        enabled=_boolean(
+            subtitle_table, "enabled", subtitle_defaults.enabled, path, "subtitles."),
+        model=_string(
+            subtitle_table, "model", subtitle_defaults.model, path, "subtitles."),
+        device=_string(
+            subtitle_table, "device", subtitle_defaults.device, path, "subtitles."),
+        asr_python=_string(
+            subtitle_table, "asr_python", subtitle_defaults.asr_python, path, "subtitles."),
+        deepseek_model=_string(
+            subtitle_table, "deepseek_model", subtitle_defaults.deepseek_model, path, "subtitles."),
+        deepseek_url=_string(
+            subtitle_table, "deepseek_url", subtitle_defaults.deepseek_url, path, "subtitles."),
+        glossary=_string(
+            subtitle_table, "glossary", subtitle_defaults.glossary, path, "subtitles."),
+        system_prompt=_string(
+            subtitle_table, "system_prompt", subtitle_defaults.system_prompt, path, "subtitles."),
+        polish_transcript=_boolean(
+            subtitle_table, "polish_transcript", subtitle_defaults.polish_transcript, path, "subtitles."),
+    ), path)
+
     media_costs = _string_map(_table(media, "costs", path), path, "media.costs.")
     if any(cost not in {"free", "metered"} for cost in media_costs.values()):
         raise _fail(path, "`[media.costs]` 只接受 free 或 metered")
@@ -445,7 +492,7 @@ def _merge(
         library_names=_string_map(_table(media, "libraries", path), path, "media.libraries."),
         library_icons=_string_map(_table(media, "library_icons", path), path, "media.library_icons."),
         media_costs=media_costs,
-        server=server, replication=replication, tunnel=tunnel,
+        server=server, replication=replication, tunnel=tunnel, subtitles=subtitles,
     )
     from . import media_identity
     if "storage_roots" in media or "library_catalog" in media:
@@ -461,6 +508,37 @@ def _merge(
     return _apply_environment(config, environ)
 
 
+def _validate_subtitles(settings: SubtitleSettings, path: Path) -> SubtitleSettings:
+    """模型、设备和 DeepSeek 地址在读配置时就拒绝，避免队列跑起来才发现写错。"""
+    if settings.device not in {"cpu", "cuda"}:
+        raise _fail(path, "`subtitles.device` 只能是 cpu 或 cuda")
+    asr_python = settings.asr_python.strip()
+    if any(char in asr_python for char in "\r\n\x00") or len(asr_python) > 1000:
+        raise _fail(path, "`subtitles.asr_python` 必须是解释器路径")
+    model = settings.model.strip()
+    if not model or any(char in model for char in "\r\n") or len(model) > 300:
+        raise _fail(path, "`subtitles.model` 必须是模型名或仓库路径")
+    if not settings.deepseek_model.strip() or any(char in settings.deepseek_model for char in "\r\n"):
+        raise _fail(path, "`subtitles.deepseek_model` 必须是模型名")
+    parsed = urlsplit(settings.deepseek_url.strip())
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise _fail(path, "`subtitles.deepseek_url` 必须是 https 地址")
+    return replace(
+        settings, model=model, asr_python=asr_python,
+        deepseek_model=settings.deepseek_model.strip(),
+        deepseek_url=settings.deepseek_url.strip(), glossary=settings.glossary.strip(),
+    )
+
+
+def _env_bool(name: str, value: str) -> bool:
+    text = value.strip().casefold()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise SettingsFileError(f"{name} 必须是 true 或 false")
+
+
 #: 环境变量 -> 设置项。这一层永远压过文件，临时覆盖和 CI 都靠它，不用改文件。
 #: `PEACH_DATA_ROOT` 在 `discover_data_root` 里就用掉了；`PEACH_MEDIA_MOUNTS` 由
 #: `peach.platform` 在每次 `location_mounts()` 里现读，测试会在运行期改它。
@@ -474,6 +552,12 @@ _REPLICATION_ENV = {
     "PEACH_SHARED_SMB_HOST": "smb_host",
     "PEACH_SHARED_SMB_SHARE": "smb_share",
     "PEACH_SHARED_SMB_USER": "smb_user",
+}
+_SUBTITLE_ENV = {
+    "PEACH_SUBTITLES_MODEL": "model",
+    "PEACH_SUBTITLES_DEVICE": "device",
+    "PEACH_SUBTITLES_DEEPSEEK_MODEL": "deepseek_model",
+    "PEACH_SUBTITLES_URL": "deepseek_url",
 }
 
 
@@ -491,6 +575,20 @@ def _apply_environment(config: PeachConfig, environ: dict[str, str]) -> PeachCon
     if replication_changes:
         config = replace(
             config, replication=replace(config.replication, **replication_changes))
+    subtitle_changes = {
+        field_name: environ[name]
+        for name, field_name in _SUBTITLE_ENV.items() if environ.get(name)
+    }
+    enabled = environ.get("PEACH_SUBTITLES_ENABLED")
+    if enabled:
+        subtitle_changes["enabled"] = _env_bool("PEACH_SUBTITLES_ENABLED", enabled)
+    polish = environ.get("PEACH_SUBTITLES_POLISH")
+    if polish:
+        subtitle_changes["polish_transcript"] = _env_bool("PEACH_SUBTITLES_POLISH", polish)
+    if subtitle_changes:
+        config = replace(
+            config, subtitles=_validate_subtitles(
+                replace(config.subtitles, **subtitle_changes), config.path))
     return config
 
 
@@ -706,6 +804,30 @@ def render(config: PeachConfig) -> str:
         "mode": config.tunnel.mode,
         "hostname": config.tunnel.hostname,
         "token": config.tunnel.token,
+    })
+    lines += [
+        "",
+        "[subtitles]",
+        "# 日语转写并生成中文字幕。默认关闭。",
+        "# 密钥只放在环境变量 DEEPSEEK_API_KEY，不要写进这个文件。",
+        "# model 是 faster-whisper 能加载的 CTranslate2 仓库或模型名，默认是 kotoba-whisper。",
+        "# device 只能是 cpu 或 cuda。glossary 是可选的术语表路径，空着用内置称呼表。",
+        "# asr_python 留空时，安装版再看 PEACH_ASR_PYTHON、PEACH_ASR_HOME 和旁边的 .venv。",
+        "# 填写已安装 asr 的 python.exe。安装包不携带 NVIDIA CUDA 运行库。",
+        "# system_prompt 留空时用内置的口语中文字幕提示。",
+        "# deepseek_model 默认 deepseek-flash，可改成 deepseek-v4-pro 或其他模型名。",
+        "# polish_transcript 为 true 时，先校对整片日语识别，再翻译。",
+    ]
+    lines += _render_pairs({
+        "enabled": config.subtitles.enabled,
+        "model": config.subtitles.model,
+        "device": config.subtitles.device,
+        "asr_python": config.subtitles.asr_python,
+        "deepseek_model": config.subtitles.deepseek_model,
+        "deepseek_url": config.subtitles.deepseek_url,
+        "glossary": config.subtitles.glossary,
+        "system_prompt": config.subtitles.system_prompt,
+        "polish_transcript": config.subtitles.polish_transcript,
     })
     return "\n".join(lines) + "\n"
 

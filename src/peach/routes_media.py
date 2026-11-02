@@ -536,7 +536,14 @@ def _subtitle_path(state, asset, row) -> Path | None:
     """字幕文件在本机的位置；逃出正片所在目录或授权根一律拒绝。
 
     路径来自账本或同目录发现，这一层仍核对当前媒体授权根。
+    目录不可写时生成的中文字幕放在数据目录，只接受那个目录里的文件。
     """
+    if row.get("generated"):
+        service = getattr(state, "subtitle_generation", None)
+        path = normalized_path(row["path"])
+        if service is None or not service.stored_root_has(path):
+            return None
+        return path
     if not asset.path:
         return None
     directory = normalized_path(asset.path).parent
@@ -585,9 +592,14 @@ def asset_subtitles(request: Request, id: int, args: dict[str, str] = Depends(re
     """
     state = request.app.state
     asset, rows = _subtitle_rows(state, id)
+    service = getattr(state, "subtitle_generation", None)
+    if service is not None:
+        rows.extend(service.extra_rows(id, asset.name or "", rows))
     tracks = []
+    notes = []
     for index, row in enumerate(rows):
         note = _subtitle_note(state, asset, row)
+        notes.append(note)
         tracks.append({
             "id": f"sidecar:{subtitles.file_key(row['name'])}",
             "legacy_id": f"sidecar:{row['id']}" if isinstance(row["id"], int) else None,
@@ -601,7 +613,16 @@ def asset_subtitles(request: Request, id: int, args: dict[str, str] = Depends(re
             "playable": not note,
             "src": f"/api/assets/{id}/subtitles/{index}?track={subtitles.file_key(row['name'])}",
         })
-    return {"id": id, "subtitles": tracks}
+    generation = {"enabled": False, "pending": False, "status": "idle", "message": ""}
+    if service is not None:
+        try:
+            generation = service.consider(id, [
+                {"language": row.get("language"), "name": row.get("name"), "note": note}
+                for row, note in zip(rows, notes, strict=True)])
+        except Exception:
+            logging.getLogger(__name__).exception("中文字幕没有排上 asset=%s", id)
+            generation = {"enabled": True, "pending": False, "status": "failed", "message": "字幕任务没有排上"}
+    return {"id": id, "subtitles": tracks, "generation": generation}
 
 
 @router.api_route("/api/assets/{id}/subtitles/{index}", methods=["GET", "HEAD"])

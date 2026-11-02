@@ -30,6 +30,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import ntpath
 import hashlib
@@ -770,4 +771,9 @@ def _scan_location(
     save_checkpoint({'mapping': mapping, 'result': asdict(result)})
     progress(files, total, force=True)
     report(result.summary())
+    try:
+        from .subtitle_generation import note_new_assets
+        note_new_assets(db_path, new_ids)
+    except Exception:
+        logging.getLogger(__name__).exception("中文字幕队列没有排上")
     return result

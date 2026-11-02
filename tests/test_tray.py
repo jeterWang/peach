@@ -555,6 +555,21 @@ class SetupGateTests(unittest.TestCase):
         self.assertNotIn("0.0.0.0", command)
         self.assertEqual(specs[0].health_url, "http://127.0.0.1:8900/healthz")
 
+    def test_standalone_tray_serves_the_port_from_the_settings_file(self):
+        self.data_root.mkdir(parents=True, exist_ok=True)
+        (self.data_root / "config.toml").write_text(
+            "[server]\nhost = \"0.0.0.0\"\nport = 8911\n", encoding="utf-8")
+        config = self._config()
+        with patch("peach.distribution.standalone", return_value=True):
+            specs = tray_module.configured_service_specs(config)
+        command = specs[0].command
+        self.assertEqual([spec.name for spec in specs], ["http"])
+        self.assertEqual(command[command.index("--port") + 1], "8911")
+        self.assertEqual(command[command.index("--host") + 1], "0.0.0.0")
+        self.assertNotIn("80", command)
+        self.assertNotIn("443", command)
+        self.assertNotIn("--ssl-certfile", command)
+
     def test_an_unconfigured_machine_starts_the_setup_service_not_the_normal_one(self):
         config = self._config()
         manager = ServiceManager(build_setup_service_specs(config),

@@ -360,6 +360,7 @@ video.video-js{vertical-align:top;font-size:10px;line-height:1;font-family:Arial
 }
 /* 窄屏梯度照搬 YouTube delhi-modern：base.js 9470c977 里 `v.width<528` 打开 ytp-xsmall-width-mode，
    右侧只留设置键和展开键，按钮从 48 收到 36、图标 24 收到 18；展开后铺开全部按钮。
+   设备竖屏另把全屏留在这排外面，见下面的 portrait 媒体查询。 */
    YouTube 展开时把时间显示改成 visibility:hidden 占着位，Peach 改成 display:none 让出宽度——
    它的控制条比 YouTube 窄，留着那段空位就又超框了。 */
 .vjs-peach-expand{display:none}
@@ -386,6 +387,11 @@ video.video-js{vertical-align:top;font-size:10px;line-height:1;font-family:Arial
 .video-js.vjs-peach-xsmall .vjs-peach-menu-option{min-height:44px}
 .video-js.vjs-peach-xsmall .vjs-peach-panel-menu:has(>.vjs-peach-menu-option:nth-child(5)){display:grid;grid-template-columns:1fr 1fr}
 .video-js.vjs-peach-xsmall .vjs-peach-right-controls>.vjs-control:not(.vjs-peach-settings):not(.vjs-peach-expand){display:none}
+/* 竖屏手机的播放器宽度总是小于 528，全屏会跟影院一起收进展开键。全屏单独留在外面。
+   桌面即使把播放器收成 xsmall，也不进这条。 */
+@media (max-width:760px) and (orientation:portrait){
+  .video-js.vjs-peach-xsmall .vjs-peach-right-controls>.vjs-fullscreen-control.vjs-control:not(.vjs-peach-expand){display:block}
+}
 .video-js.vjs-peach-xsmall .vjs-peach-expand{display:block}
 .video-js.vjs-peach-xsmall.vjs-peach-right-expanded .vjs-peach-right-controls>.vjs-control:not(.vjs-peach-settings):not(.vjs-peach-expand){display:block}
 .video-js.vjs-peach-xsmall.vjs-peach-right-expanded .vjs-peach-time{display:none}
@@ -404,6 +410,16 @@ video.video-js{vertical-align:top;font-size:10px;line-height:1;font-family:Arial
   max-width:none!important;max-height:none!important;aspect-ratio:auto!important;z-index:10000!important}
 [data-stage-media] :is([data-stage-media]>.video-js.vjs-fullscreen,.video-js.vjs-fullscreen,.video-js[data-peach-fullscreen],body.vjs-full-window .video-js,.video-js:fullscreen,.video-js:-webkit-full-screen,.video-js:-moz-full-screen,[data-stage-media]:fullscreen>.video-js,[data-stage-media]:-webkit-full-screen>.video-js,[data-stage-media]:-moz-full-screen>.video-js) .vjs-tech{
   position:absolute!important;inset:0!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;object-fit:contain!important}
+/* iPhone 页内全屏：铺满可视视口，压过竖屏那条按视口减出来的高度。只在播放器带
+   `data-peach-fullwindow` 时生效，桌面不会带上这个属性。 */
+.video-js[data-peach-fullwindow]{position:fixed!important;inset:0!important;z-index:10000!important;width:100vw!important;
+  height:100vh!important;height:100dvh!important;max-width:none!important;max-height:none!important;margin:0!important;
+  aspect-ratio:auto!important;border-radius:0!important}
+.video-js[data-peach-fullwindow] .vjs-tech{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;
+  max-width:none!important;max-height:none!important;object-fit:contain!important}
+.video-js[data-peach-fullwindow] .vjs-control-bar{left:max(8px,env(safe-area-inset-left,0px))!important;
+  right:max(8px,env(safe-area-inset-right,0px))!important;bottom:calc(8px + env(safe-area-inset-bottom,0px))!important}
+html[data-peach-fullwindow],html[data-peach-fullwindow] body{overflow:hidden!important}
 [data-player-stats-button]{position:absolute;left:11px;top:11px;z-index:8;width:40px;height:40px;padding:0;
   display:grid;place-items:center;border:0;border-radius:50%;
   background:rgba(0,0,0,.6);color:#fff;cursor:pointer;box-shadow:none;isolation:isolate;overflow:hidden}
@@ -465,3 +481,19 @@ video.video-js{vertical-align:top;font-size:10px;line-height:1;font-family:Arial
 [data-player-menu]>span{overflow:hidden;text-overflow:ellipsis}
 [data-player-menu]>[data-player-menu-check]{grid-column:3;justify-self:center;margin:0;width:18px;height:18px;visibility:hidden}
 [data-player-menu][aria-checked="true"]>[data-player-menu-check]{visibility:visible}
+/* 竖屏页内全屏：横屏画面转 90°，盒子的宽高对调后用 cover 贴满长边。控制条留在屏幕底部。
+   字幕用同一组变换，贴在画面自己的底边，字向和画面一致。 */
+@media (orientation:portrait){
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-tech{position:absolute!important;z-index:0!important;
+    inset:auto!important;top:0!important;left:100vw!important;right:auto!important;bottom:auto!important;
+    width:100vh!important;width:100dvh!important;height:100vw!important;max-width:none!important;max-height:none!important;
+    transform:rotate(90deg)!important;transform-origin:top left!important;object-fit:cover!important}
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-control-bar{z-index:3!important;transform:none!important}
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-peach-captions{position:absolute!important;z-index:3!important;
+    inset:auto!important;top:0!important;left:100vw!important;right:auto!important;bottom:auto!important;
+    box-sizing:border-box;width:100vh!important;width:100dvh!important;height:100vw!important;max-width:none!important;
+    align-items:flex-end;justify-content:center;padding:0 5% 8%!important;
+    transform:rotate(90deg)!important;transform-origin:top left!important}
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-peach-captions:not([hidden]){display:flex!important}
+  [data-stage-media] .video-js.vjs-user-inactive.vjs-playing[data-peach-fullwindow][data-peach-rotate="90"] .vjs-peach-captions{bottom:auto!important;padding-bottom:5%!important}
+}
