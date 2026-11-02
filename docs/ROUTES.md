@@ -28,6 +28,8 @@
 
 播放器字幕记忆通过 `/api/subtitles/memory?video=` 读取（GET）与保存（PUT），沿用站内授权。`video` 使用 `item:<资产 ID>` 或 `follow:<帖子 ID>:<main 或媒体序号>`。PUT 的 `selected` 为轨道键或表示关闭的 `null`；可附 `track: {key, name, text}` 保存转换后的 WebVTT。读取返回 `selected` 和 `tracks: [{key, name, src}]`；字幕内容通过返回的 `src` 读取。无效视频标识返回 400，不存在的视频或字幕返回 404。加载的字幕和选择状态保存在服务端，再次播放时恢复。
 
+`GET /api/subtitles/generation` 返回自动中文字幕的开关、不可用原因、排队／生成中／失败／已完成／已忽略的数量，以及正在生成的作品和最多 40 条排队、失败、已忽略记录。`POST /api/subtitles/generation` 用 `enabled` 打开或关闭生成。`POST /api/subtitles/generation/retry` 与 `POST /api/subtitles/generation/ignore` 接受作品 `id`，分别放回队首或移出队列。这些接口沿用站内授权。
+
 `GET /api/assets/:id/subtitles` 合并已登记字幕与视频同目录即时发现的配对字幕，按路径去重，不进入子目录、不写账本。返回的 `id` 按文件名保持稳定，`legacy_id` 用于恢复已保存的登记轨道选择。字幕内容使用返回的 `src`：`track` 参数绑定文件身份，目录列表变化不改变所取字幕；文件消失或身份无效返回 404。SRT、ASS、SSA、VTT 复用现有 WebVTT 转换与 4 MiB 读取上限；未获授权的媒体目录不参与发现。
 
 管理区锚点链接复用站内导航，等待目标页内容与字体就绪后平滑滚动；启用减少动态效果时直接定位。关闭详情保留背景页面的滚动位置。

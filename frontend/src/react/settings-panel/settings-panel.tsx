@@ -543,6 +543,9 @@ function PlaybackRows({ host: current, epoch }: Omit<GroupProps, 'tab'>) {
   const save = () => current.store.save();
   return (
     <>
+      <Row title="中文字幕生成" description="查看日语转写队列，打开或关闭生成，重试失败项，或忽略一部作品。">
+        <div className="peach-react"><ButtonLink variant="secondary" href="/settings/maintenance#subtitleGeneration" onClick={() => close(false)}>管理</ButtonLink></div>
+      </Row>
       <ToggleRow id="detailAutoplaySetting" title="打开详情自动播放" checked={settings.detailAutoplay}
         onToggle={(on) => { settings.detailAutoplay = on; save() }} />
       <ToggleRow id="miniplayerSetting" title="离开详情后小窗播放" checked={settings.miniplayer}
