@@ -1,8 +1,9 @@
 """把还没有中文字幕的影片转成可自动打开的中文字幕。
 
 日语音轨用 faster-whisper 加载 kotoba-whisper（或配置里的其他 CTranslate2 权重），
-`language` 固定为 `ja`。译文走 DeepSeek 的 chat completions，密钥只读
-`DEEPSEEK_API_KEY`。已经有中文外挂，或 ffprobe 能看见内嵌中文轨的，整条跳过。
+`language` 固定为 `ja`。识别结果先交给 DeepSeek 校对日语，再整片译成中文。
+校对只改文字，条数和时间轴保持不变。密钥只读 `DEEPSEEK_API_KEY`。
+已经有中文外挂，或 ffprobe 能看见内嵌中文轨的，整条跳过。
 
 生成的 `影片名.chs.srt` 跟正片同目录，沿用现有 sidecar 配对；目录不可写时改放到
 数据目录，由字幕接口补进播放列表。
@@ -61,6 +62,27 @@ DEFAULT_STYLE = (
     "不要拒绝，不要点评，不要解释。"
 )
 OUTPUT_CONTRACT = "占位符 __P0__、__P1__ 这种记号必须原样保留。只输出编号译文，不要加说明。"
+POLISH_STYLE = (
+    "你是成人影片的日语字幕校对。输入是语音识别的日语，不是译文。"
+    "只修正同音误识别、口癖碎句和明显的幻听乱码，保留说话人的意思和口语。"
+    "不要翻译，不要写成中文，不要添加原文没有的情节。"
+    "背景音乐、标题或没有对白的幻听，这一行留空。"
+    "不要拒绝，不要点评，不要解释。"
+)
+POLISH_CONTRACT = "只输出编号后的日语。没有对白的行在编号后留空。不要加说明。"
+TRANSLATE_INTRO = (
+    "下面是同一部影片按时间排列的对白。"
+    "把每一行日语译成一行口语简体中文，称呼和关系与前后文一致。"
+    "空白行保持空白，不要补对白。"
+    "保持行数，每行以「编号|」开头。"
+)
+POLISH_INTRO = (
+    "下面是同一部影片按时间排列的日语识别结果。"
+    "逐行校对成日语，不要翻译。保持行数，每行以「编号|」开头。"
+    "听得清的对白保留说话人的说法；明显不是对白的行留空。"
+)
+TRANSLATE_CARRY = "已确定的译法保持不变，这些行不要再次输出："
+POLISH_CARRY = "前面已经改成这些说法，同一称呼保持一致，这些行不要再次输出："
 _NUMBERED = re.compile(r"^\s*(\d+)\s*[\|｜]\s*(.*)$")
 # 单次请求的安全预算是 900_000 token（输入估测 + 这次译文的输出估测）。
 # deepseek-flash / deepseek-v4-pro 上下文约 1_000_000，输出上限 384_000（393_216）。
@@ -245,13 +267,51 @@ def translate_with_deepseek(
                 missing = [token for token, _target in slot if token not in text]
                 if missing:
                     raise SubtitleGenerationError("译文丢掉了术语占位符")
-                restored = restore(text, slot)
+                restored = "" if not str(source).strip() else restore(text, slot)
                 translated.append(restored)
                 _remember(memory, source, restored, slot)
     finally:
         if own:
             client.close()
     return translated
+
+
+def polish_prompt(_settings: SubtitleSettings) -> str:
+    """校对提示不使用翻译用的 `system_prompt`，避免把这一步写成中文。"""
+    return POLISH_STYLE + "\n" + POLISH_CONTRACT
+
+
+def polish_with_deepseek(
+    lines: Sequence[str], settings: SubtitleSettings, *, client=None,
+) -> list[str]:
+    """把一部影片的日语识别校对成仍是日语的对白。超长片按与翻译相同的块续校。
+
+    条数与输入一致，时间轴由调用方保留。明显的非对白留空，不合并字幕条。
+    """
+    key = os.environ.get(API_KEY_ENV, "").strip()
+    if not key:
+        raise SubtitleGenerationError("未设置 DEEPSEEK_API_KEY")
+    system = polish_prompt(settings)
+    originals = [str(line) for line in lines]
+    own = client is None
+    if own:
+        client = _translation_client()
+    polished: list[str] = []
+    memory: list[tuple[str, str]] = []
+    try:
+        for start, end in _slice_plan(originals, settings, (), system=system, intro=POLISH_INTRO):
+            piece = _deepseek_batch(
+                originals[start:end], settings, (), key, client, _carry_pairs(memory),
+                system=system, intro=POLISH_INTRO, carry_note=POLISH_CARRY,
+            )
+            for source, text in zip(originals[start:end], piece, strict=True):
+                cleaned = " ".join(str(text).split())
+                polished.append(cleaned)
+                _remember_correction(memory, source, cleaned)
+    finally:
+        if own:
+            client.close()
+    return polished
 
 
 def _translation_client():
@@ -275,19 +335,25 @@ def _estimate_tokens(text: str) -> int:
     return cjk + (other + 3) // 4
 
 
-def _fits(lines: Sequence[str], settings: SubtitleSettings, glossary, extra: int) -> bool:
-    system = style_prompt(settings, glossary)
-    user = _numbered(lines)
-    incoming = _estimate_tokens(system) + _estimate_tokens(user) + extra + 32
+def _fits(
+    lines: Sequence[str], settings: SubtitleSettings, glossary, extra: int, *,
+    system: str | None = None, intro: str | None = None,
+) -> bool:
+    system_text = style_prompt(settings, glossary) if system is None else system
+    user = _numbered(lines) if intro is None else _message(intro, lines)
+    incoming = _estimate_tokens(system_text) + _estimate_tokens(user) + extra + 32
     needed = min(_MAX_OUTPUT_TOKENS, max(8_192, _estimate_tokens(user) + len(lines) * 8))
     return incoming + needed <= _CONTEXT_BUDGET
 
 
-def _slice_plan(lines: Sequence[str], settings: SubtitleSettings, glossary) -> list[tuple[int, int]]:
+def _slice_plan(
+    lines: Sequence[str], settings: SubtitleSettings, glossary, *,
+    system: str | None = None, intro: str | None = None,
+) -> list[tuple[int, int]]:
     count = len(lines)
     if count == 0:
         return []
-    if _fits(lines, settings, glossary, 0):
+    if _fits(lines, settings, glossary, 0, system=system, intro=intro):
         return [(0, count)]
     slices: list[tuple[int, int]] = []
     start = 0
@@ -295,7 +361,9 @@ def _slice_plan(lines: Sequence[str], settings: SubtitleSettings, glossary) -> l
         room = count - start
         size = min(_CHUNK_LINES, room)
         extra = _CARRY_TOKEN_ALLOWANCE if start else 0
-        if size > _CHUNK_FLOOR and not _fits(lines[start:start + size], settings, glossary, extra):
+        if size > _CHUNK_FLOOR and not _fits(
+            lines[start:start + size], settings, glossary, extra, system=system, intro=intro,
+        ):
             size = min(_CHUNK_FLOOR, room)
         slices.append((start, start + size))
         start += size
@@ -321,6 +389,16 @@ def _remember(memory: list[tuple[str, str]], source: str, target: str, slot) -> 
     memory.append((source, target))
 
 
+def _remember_correction(memory: list[tuple[str, str]], source: str, target: str) -> None:
+    """校对块之间只带走改过的短称呼，避免把整句对白再送一遍。"""
+    source, target = " ".join(source.split()), " ".join(target.split())
+    if not source or not target or source == target or len(source) > 40 or len(target) > 40:
+        return
+    if not _NAME_HINT.search(source + target) and max(len(source), len(target)) > 16:
+        return
+    memory.append((source, target))
+
+
 def _carry_pairs(memory: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
     chosen: dict[str, str] = {}
     for source, target in memory:
@@ -329,17 +407,23 @@ def _carry_pairs(memory: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
     return list(chosen.items())[-_CARRY_PAIRS:]
 
 
-def _deepseek_batch(lines, settings: SubtitleSettings, glossary, key: str, client, carry=()) -> list[str]:
-    system = style_prompt(settings, glossary)
-    user = _numbered(lines, carry)
+def _deepseek_batch(
+    lines, settings: SubtitleSettings, glossary, key: str, client, carry=(), *,
+    system: str | None = None, intro: str | None = None, carry_note: str | None = None,
+) -> list[str]:
+    system_text = style_prompt(settings, glossary) if system is None else system
+    if intro is None:
+        user = _numbered(lines, carry)
+    else:
+        user = _message(intro, lines, carry, carry_note or POLISH_CARRY)
     payload = {
         "model": settings.deepseek_model,
         "temperature": 0.3,
         # 当前接口默认开启思考。思考模式下 temperature 不生效，推理还会占掉输出额度。
         "thinking": {"type": "disabled"},
-        "max_tokens": _max_tokens_for(system, user),
+        "max_tokens": _max_tokens_for(system_text, user),
         "messages": [
-            {"role": "system", "content": system},
+            {"role": "system", "content": system_text},
             {"role": "user", "content": user},
         ],
     }
@@ -363,17 +447,20 @@ def _deepseek_batch(lines, settings: SubtitleSettings, glossary, key: str, clien
     raise SubtitleGenerationError(last)
 
 
-def _numbered(lines: Sequence[str], carry: Sequence[tuple[str, str]] = ()) -> str:
-    intro = (
-        "下面是同一部影片按时间排列的对白。"
-        "把每一行日语译成一行口语简体中文，称呼和关系与前后文一致。"
-        "保持行数，每行以「编号|」开头。"
-    )
+def _message(
+    intro: str, lines: Sequence[str], carry: Sequence[tuple[str, str]] = (),
+    carry_note: str = TRANSLATE_CARRY,
+) -> str:
+    text = intro
     if carry:
         rows = "\n".join(f"{source} → {target}" for source, target in carry)
-        intro += "\n已确定的译法保持不变，这些行不要再次输出：\n" + rows
-    body = "\n".join(f"{index}|{text}" for index, text in enumerate(lines, 1))
-    return intro + "\n" + body
+        text += "\n" + carry_note + "\n" + rows
+    body = "\n".join(f"{index}|{line}" for index, line in enumerate(lines, 1))
+    return text + "\n" + body
+
+
+def _numbered(lines: Sequence[str], carry: Sequence[tuple[str, str]] = ()) -> str:
+    return _message(TRANSLATE_INTRO, lines, carry, TRANSLATE_CARRY)
 
 
 def load_whisper(settings: SubtitleSettings, download_root: Path):
@@ -543,7 +630,8 @@ class SubtitleService:
 
     def __init__(self, *, root: Path, database_path: Path, media=None, ffmpeg=None,
                  settings: SubtitleSettings | Callable[[], SubtitleSettings] | None = None,
-                 translator: Callable | None = None, transcriber: Callable | None = None,
+                 translator: Callable | None = None, polisher: Callable | None = None,
+                 transcriber: Callable | None = None,
                  extractor: Callable | None = None, embedded: Callable | None = None):
         self.root = Path(root)
         self.database_path = Path(database_path)
@@ -551,6 +639,7 @@ class SubtitleService:
         self.ffmpeg = ffmpeg
         self._settings = settings
         self._translator = translator or translate_with_deepseek
+        self._polisher = polisher or polish_with_deepseek
         self._transcriber = transcriber
         self._extractor = extractor
         self._embedded = embedded
@@ -688,7 +777,12 @@ class SubtitleService:
             cues = self._transcribe(wav, settings)
             if not cues:
                 raise SubtitleGenerationError("没有识别到日语对白")
-            translated = self._translator([text for _start, _end, text in cues], settings)
+            texts = [text for _start, _end, text in cues]
+            if settings.polish_transcript:
+                texts = list(self._polisher(texts, settings))
+                if len(texts) != len(cues):
+                    raise SubtitleGenerationError("校对行数与原文不一致")
+            translated = self._translator(texts, settings)
             if len(translated) != len(cues):
                 raise SubtitleGenerationError("译文行数与原文不一致")
             zh = [(start, end, text) for (start, end, _source), text in zip(cues, translated, strict=True) if text.strip()]

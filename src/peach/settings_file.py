@@ -216,6 +216,7 @@ class SubtitleSettings:
 
     密钥只读环境变量 `DEEPSEEK_API_KEY`，不进这个文件。默认关闭：打开后会对还没有
     中文字幕的影片调用外部接口。默认模型是当前接口的 `deepseek-flash`。
+    `polish_transcript` 为真时，翻译前先把整片日语识别校对一遍。
     """
 
     enabled: bool = False
@@ -225,6 +226,7 @@ class SubtitleSettings:
     deepseek_url: str = "https://api.deepseek.com/chat/completions"
     glossary: str = ""
     system_prompt: str = ""
+    polish_transcript: bool = True
 
 
 @dataclass(frozen=True)
@@ -472,6 +474,8 @@ def _merge(
             subtitle_table, "glossary", subtitle_defaults.glossary, path, "subtitles."),
         system_prompt=_string(
             subtitle_table, "system_prompt", subtitle_defaults.system_prompt, path, "subtitles."),
+        polish_transcript=_boolean(
+            subtitle_table, "polish_transcript", subtitle_defaults.polish_transcript, path, "subtitles."),
     ), path)
 
     media_costs = _string_map(_table(media, "costs", path), path, "media.costs.")
@@ -569,6 +573,9 @@ def _apply_environment(config: PeachConfig, environ: dict[str, str]) -> PeachCon
     enabled = environ.get("PEACH_SUBTITLES_ENABLED")
     if enabled:
         subtitle_changes["enabled"] = _env_bool("PEACH_SUBTITLES_ENABLED", enabled)
+    polish = environ.get("PEACH_SUBTITLES_POLISH")
+    if polish:
+        subtitle_changes["polish_transcript"] = _env_bool("PEACH_SUBTITLES_POLISH", polish)
     if subtitle_changes:
         config = replace(
             config, subtitles=_validate_subtitles(
@@ -798,6 +805,7 @@ def render(config: PeachConfig) -> str:
         "# device 只能是 cpu 或 cuda。glossary 是可选的术语表路径，空着用内置称呼表。",
         "# system_prompt 留空时用内置的口语中文字幕提示。",
         "# deepseek_model 默认 deepseek-flash，可改成 deepseek-v4-pro 或其他模型名。",
+        "# polish_transcript 为 true 时，先校对整片日语识别，再翻译。",
     ]
     lines += _render_pairs({
         "enabled": config.subtitles.enabled,
@@ -807,6 +815,7 @@ def render(config: PeachConfig) -> str:
         "deepseek_url": config.subtitles.deepseek_url,
         "glossary": config.subtitles.glossary,
         "system_prompt": config.subtitles.system_prompt,
+        "polish_transcript": config.subtitles.polish_transcript,
     })
     return "\n".join(lines) + "\n"
 

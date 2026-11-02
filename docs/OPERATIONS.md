@@ -589,7 +589,7 @@ Peach 配置「媒体库与入库 → 视频预览」中的「抽帧解码方式
 
 播放器打开影片时，会自动显示已经能播的中文轨：外挂文件名里的 `zh`、`chs`、`chi`、`zh-CN` 等 Peach 认得的标记，以及浏览器自己报出来的中文文本轨。手动选过轨道或关掉字幕之后，记住的是这次选择。
 
-还没有中文轨时，可以在后台生成。服务用 faster-whisper 按日语转写（默认模型是 [kotoba-tech/kotoba-whisper-v2.0-faster](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0-faster)，`language=ja`），再把对白交给 DeepSeek 译成口语简体中文。ReazonSpeech 不走这条链路，它不是 faster-whisper 能加载的权重。已经有中文外挂，或 ffprobe 能看到语言/标题标成中文的内嵌字幕轨，这一部不会再转写、也不会再调用 DeepSeek。图形内嵌轨（PGS、VobSub）只要标了中文也跳过；浏览器播不了的图形轨不会因此再生成一份文本字幕。
+还没有中文轨时，可以在后台生成。服务用 faster-whisper 按日语转写（默认模型是 [kotoba-tech/kotoba-whisper-v2.0-faster](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0-faster)，`language=ja`）。默认识别结果先整片交给 DeepSeek 校对日语：改正同音误识别、口癖碎句和明显幻听，背景音乐或没有对白的乱码留空；时间轴和条数保持不变。校对后的日语再整片译成口语简体中文。ReazonSpeech 不走这条链路，它不是 faster-whisper 能加载的权重。已经有中文外挂，或 ffprobe 能看到语言/标题标成中文的内嵌字幕轨，这一部不会再转写、也不会再调用 DeepSeek。图形内嵌轨（PGS、VobSub）只要标了中文也跳过；浏览器播不了的图形轨不会因此再生成一份文本字幕。
 
 生成结果是正片旁边的 `影片名.chs.srt`。播放列表把它当成普通外挂字幕，转成 WebVTT 后自动打开。正片目录不可写时，文件改放在数据目录的 `generated/subtitles/tracks/`，接口仍会把它挂上。
 
@@ -602,9 +602,10 @@ model = "kotoba-tech/kotoba-whisper-v2.0-faster"
 device = "cpu"
 deepseek_model = "deepseek-flash"
 deepseek_url = "https://api.deepseek.com/chat/completions"
+polish_transcript = true
 ```
 
-`device` 只能是 `cpu` 或 `cuda`。`deepseek_model` 默认是 `deepseek-flash`，也可以写成 `deepseek-v4-pro` 或其他模型名。一部影片的对白放进同一次请求，模型按整段对话统一称呼和关系；输出上限是 262144 token。对白估测超过约 90 万 token（输入加上输出上限）时，改为 600 行一块，单块仍放不下则用 400 行，后一块带上最多 24 条已经译定的称呼。`glossary` 可指向一份 UTF-8 术语表，每行 `日文<制表符>中文`，`#` 开头是注释；同名日文覆盖内置称呼。`system_prompt` 留空时用内置提示：口语、同一部片子里的称呼和关系保持一致、不改写成书面语、不添加原文没有的情节。环境变量 `PEACH_SUBTITLES_ENABLED`、`PEACH_SUBTITLES_MODEL`、`PEACH_SUBTITLES_DEVICE`、`PEACH_SUBTITLES_DEEPSEEK_MODEL`、`PEACH_SUBTITLES_URL` 覆盖文件里的对应项。
+`device` 只能是 `cpu` 或 `cuda`。`deepseek_model` 默认是 `deepseek-flash`，也可以写成 `deepseek-v4-pro` 或其他模型名。`polish_transcript` 默认开启：先整片校对日语，再整片翻译。校对和翻译都是一次请求，输出上限都是 262144 token。对白估测超过约 90 万 token（输入加上输出上限）时，改为 600 行一块，单块仍放不下则用 400 行；校对块带上已改过的短称呼，翻译块带上已译称呼。`glossary` 可指向一份 UTF-8 术语表，每行 `日文<制表符>中文`，`#` 开头是注释；同名日文覆盖内置称呼，只在翻译时替换。`system_prompt` 留空时用内置提示：口语、同一部片子里的称呼和关系保持一致、不改写成书面语、不添加原文没有的情节。环境变量 `PEACH_SUBTITLES_ENABLED`、`PEACH_SUBTITLES_MODEL`、`PEACH_SUBTITLES_DEVICE`、`PEACH_SUBTITLES_DEEPSEEK_MODEL`、`PEACH_SUBTITLES_URL`、`PEACH_SUBTITLES_POLISH` 覆盖文件里的对应项。
 
 DeepSeek 密钥只读环境变量 `DEEPSEEK_API_KEY`，不要写进 `config.toml`、账本或日志。改完用户环境变量后要重新打开终端，再启动 Peach，进程才看得到。
 

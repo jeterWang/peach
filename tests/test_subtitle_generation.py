@@ -14,8 +14,8 @@ from peach import settings_file, subtitle_generation as gen
 from peach.settings_file import SettingsFileError, SubtitleSettings
 from peach.subtitle_generation import (
     SubtitleService, load_glossary, parse_numbered, protect, restore,
-    row_is_chinese, subtitle_tag_is_chinese, to_srt, translate_with_deepseek,
-    videos_without_chinese,
+    polish_with_deepseek, row_is_chinese, subtitle_tag_is_chinese, to_srt,
+    translate_with_deepseek, videos_without_chinese,
 )
 from support.ledger import fresh_ledger
 
@@ -284,6 +284,111 @@ class CaptionTests(unittest.TestCase):
         self.assertGreaterEqual(seen["timeout"].read, gen._READ_TIMEOUT)
         self.assertEqual(seen["timeout"].connect, 30)
 
+    def test_blank_japanese_stays_blank_in_translation(self):
+        class Client:
+            def post(self, url, json, headers):
+                numbered = []
+                for item in json["messages"][1]["content"].splitlines():
+                    match = gen._NUMBERED.match(item.strip())
+                    if not match:
+                        continue
+                    text = match.group(2) if match.group(2).strip() else "不该出现"
+                    numbered.append(f"{match.group(1)}|{text}")
+                return SimpleNamespace(status_code=200, json=lambda body="\n".join(numbered): {
+                    "choices": [{"message": {"content": body}}]})
+
+            def close(self):
+                pass
+
+        previous = os.environ.get(gen.API_KEY_ENV)
+        os.environ[gen.API_KEY_ENV] = "test-key-not-a-secret"
+        try:
+            result = translate_with_deepseek(["先輩", ""], SubtitleSettings(), client=Client())
+        finally:
+            if previous is None:
+                os.environ.pop(gen.API_KEY_ENV, None)
+            else:
+                os.environ[gen.API_KEY_ENV] = previous
+        self.assertEqual(result, ["前辈", ""])
+
+    def test_polish_keeps_japanese_and_blanks_non_speech(self):
+        calls = []
+
+        class Client:
+            def post(self, url, json, headers):
+                calls.append(json)
+                numbered = []
+                for item in json["messages"][1]["content"].splitlines():
+                    match = gen._NUMBERED.match(item.strip())
+                    if not match:
+                        continue
+                    text = match.group(2).replace("せんぱい", "先輩")
+                    if "音楽" in text:
+                        text = ""
+                    numbered.append(f"{match.group(1)}|{text}")
+                return SimpleNamespace(status_code=200, json=lambda body="\n".join(numbered): {
+                    "choices": [{"message": {"content": body}}]})
+
+            def close(self):
+                pass
+
+        previous = os.environ.get(gen.API_KEY_ENV)
+        os.environ[gen.API_KEY_ENV] = "test-key-not-a-secret"
+        try:
+            result = polish_with_deepseek(["せんぱい、こっち", "♪音楽♪"], SubtitleSettings(), client=Client())
+        finally:
+            if previous is None:
+                os.environ.pop(gen.API_KEY_ENV, None)
+            else:
+                os.environ[gen.API_KEY_ENV] = previous
+        self.assertEqual(result, ["先輩、こっち", ""])
+        self.assertEqual(len(calls), 1)
+        system = calls[0]["messages"][0]["content"]
+        self.assertIn("不要翻译", system)
+        self.assertIn("幻听", system)
+        self.assertNotIn("译成", system)
+        self.assertEqual(calls[0]["model"], "deepseek-flash")
+        self.assertEqual(calls[0]["thinking"], {"type": "disabled"})
+        self.assertEqual(calls[0]["max_tokens"], gen._MAX_OUTPUT_TOKENS)
+        self.assertIn("1|せんぱい、こっち", calls[0]["messages"][1]["content"])
+
+    def test_oversized_polish_uses_the_same_large_chunks(self):
+        lines = [f"せんぱい{index}" for index in range(1000)]
+        calls = []
+
+        class Client:
+            def post(self, url, json, headers):
+                calls.append(json["messages"][1]["content"])
+                numbered = []
+                for item in json["messages"][1]["content"].splitlines():
+                    match = gen._NUMBERED.match(item.strip())
+                    if match:
+                        numbered.append(f"{match.group(1)}|{match.group(2).replace('せんぱい', '先輩')}")
+                return SimpleNamespace(status_code=200, json=lambda body="\n".join(numbered): {
+                    "choices": [{"message": {"content": body}}]})
+
+            def close(self):
+                pass
+
+        previous = os.environ.get(gen.API_KEY_ENV)
+        os.environ[gen.API_KEY_ENV] = "test-key-not-a-secret"
+        original = gen._CONTEXT_BUDGET
+        gen._CONTEXT_BUDGET = 1
+        try:
+            result = polish_with_deepseek(lines, SubtitleSettings(), client=Client())
+        finally:
+            gen._CONTEXT_BUDGET = original
+            if previous is None:
+                os.environ.pop(gen.API_KEY_ENV, None)
+            else:
+                os.environ[gen.API_KEY_ENV] = previous
+        sizes = [sum(1 for item in content.splitlines() if gen._NUMBERED.match(item.strip())) for content in calls]
+        self.assertEqual(sizes, [400, 400, 200])
+        self.assertIn("先輩", calls[1])
+        self.assertIn("→", calls[1])
+        self.assertTrue(result[0].startswith("先輩"))
+        self.assertEqual(len(result), 1000)
+
     def test_chinese_tags_and_sidecar_names_match_existing_detection(self):
         self.assertTrue(subtitle_tag_is_chinese("zh-CN", ""))
         self.assertTrue(subtitle_tag_is_chinese("chi", ""))
@@ -319,6 +424,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(loaded.subtitles.device, "cuda")
         self.assertEqual(loaded.subtitles.model, SubtitleSettings().model)
         self.assertEqual(loaded.subtitles.deepseek_model, "deepseek-flash")
+        self.assertTrue(loaded.subtitles.polish_transcript)
+        self.assertIn("polish_transcript = true", settings_file.render(loaded))
         tree.write(settings_file.render(loaded))
         self.assertTrue(tree.load().subtitles.enabled)
         tree.write("[subtitles]\ndeepseek_url = 'http://api.deepseek.com/chat/completions'\n")
@@ -332,9 +439,11 @@ class SettingsTests(unittest.TestCase):
         loaded = tree.load({
             "PEACH_SUBTITLES_ENABLED": "true", "PEACH_SUBTITLES_DEVICE": "cpu",
             "PEACH_SUBTITLES_DEEPSEEK_MODEL": "deepseek-v4-pro",
+            "PEACH_SUBTITLES_POLISH": "false",
         })
         self.assertTrue(loaded.subtitles.enabled)
         self.assertEqual(loaded.subtitles.deepseek_model, "deepseek-v4-pro")
+        self.assertFalse(loaded.subtitles.polish_transcript)
 
 
 class GenerationTests(unittest.TestCase):
@@ -348,24 +457,61 @@ class GenerationTests(unittest.TestCase):
 
         def translate(lines, _settings):
             self.calls += 1
+            self.translated = list(lines)
             return ["中文对白" for _line in lines]
+
+        def polish(_lines, _settings):
+            raise AssertionError("校对已关闭")
 
         self.service = SubtitleService(
             root=self.root / "generated", database_path=self.root / "ledger.db",
             media=SimpleNamespace(
                 filesystem=SimpleNamespace(allowed_roots=()),
                 asset=lambda _asset_id: SimpleNamespace(path=str(self.video))),
-            settings=SubtitleSettings(enabled=True),
+            settings=SubtitleSettings(enabled=True, polish_transcript=False),
             translator=translate,
+            polisher=polish,
             transcriber=lambda _wav, _settings: [(0.0, 1.2, "先輩")],
             extractor=lambda _source, dest: (dest.parent.mkdir(parents=True, exist_ok=True), dest.write_bytes(b"RIFF")),
             embedded=lambda _path: False,
         )
 
+    def test_polish_runs_before_translation_and_hides_the_raw_transcript(self):
+        seen = {}
+
+        def polish(lines, _settings):
+            seen["polish"] = list(lines)
+            return ["校正後の先輩", ""]
+
+        def translate(lines, _settings):
+            seen["translate"] = list(lines)
+            return ["前辈" if line else "" for line in lines]
+
+        service = SubtitleService(
+            root=self.root / "polished", database_path=self.root / "ledger.db",
+            media=self.service.media,
+            settings=SubtitleSettings(enabled=True, polish_transcript=True),
+            translator=translate,
+            polisher=polish,
+            transcriber=lambda _wav, _settings: [(0.0, 1.0, "せんぱい"), (1.2, 2.0, "♪音楽♪")],
+            extractor=lambda _source, dest: (dest.parent.mkdir(parents=True, exist_ok=True), dest.write_bytes(b"RIFF")),
+            embedded=lambda _path: False,
+        )
+        service._run_one(7)
+        self.assertEqual(seen["polish"], ["せんぱい", "♪音楽♪"])
+        self.assertEqual(seen["translate"], ["校正後の先輩", ""])
+        self.assertNotIn("せんぱい", seen["translate"])
+        path, _marker = gen.sidecar_paths(self.video)
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("前辈", text)
+        self.assertIn("00:00:00,000 --> 00:00:01,000", text)
+        self.assertEqual(text.count("-->"), 1)
+
     def test_generation_writes_a_chinese_sidecar_and_does_not_repeat(self):
         self.service._run_one(7)
         path, marker = gen.sidecar_paths(self.video)
         self.assertIn("中文对白", path.read_text(encoding="utf-8"))
+        self.assertEqual(self.translated, ["先輩"])
         self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["translator"], "deepseek")
         self.service._run_one(7)
         self.assertEqual(self.calls, 1)
