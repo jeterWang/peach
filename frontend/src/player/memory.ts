@@ -5,6 +5,7 @@ import type { VjsPlayer } from './types';
 
 export interface PlayerMemoryValue {
   selected: string | null;
+  subtitle_chosen?: boolean;
   tracks: { key: string; name: string; src: string }[];
   rotation?: number;
   rate?: number;

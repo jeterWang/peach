@@ -408,6 +408,11 @@ def create_app(
                                                     quality=COVER_SMALL_THUMB_QUALITY)
     transcode_service = TranscodeService(resolver, settings.transcode_root, state_root=settings.follow_state_root)
     header_repairs = HeaderRepairStore(settings.transcode_root, resolver, runs=contract.task_runs)
+    from .subtitle_generation import SubtitleService, install as install_subtitles
+    subtitle_generation = SubtitleService(
+        root=settings.candidate_root / "subtitles", database_path=settings.db_path,
+        media=media_engine, ffmpeg=resolver)
+    install_subtitles(subtitle_generation)
     hls_plan_executor = ThreadPoolExecutor(
         max_workers=2, thread_name_prefix="PeachHlsPlan",
     )
@@ -520,6 +525,7 @@ def create_app(
         ledger_ready = await activation.start()
         if settings.configured:
             mount_reachability.start()
+        subtitle_generation.start()
         warmup = asyncio.create_task(warm_startup_entries())
         aggregate_stop = asyncio.Event()
         aggregate_warmup = asyncio.create_task(_warm_ledger_aggregates(ledger_ready, contract, aggregate_stop))
@@ -554,6 +560,7 @@ def create_app(
             # 一下，免得在途的那一轮在解释器拆卸期间还继续查库、往没人读的状态里写。
             contract.stop_background_jobs()
             header_repairs.stop()
+            subtitle_generation.stop()
             from . import face_models
             face_models.detach(contract.task_runs)
             if mdns is not None:
@@ -589,6 +596,7 @@ def create_app(
     app.state.cover_small_thumb_service = cover_small_thumb_service
     app.state.transcode_service = transcode_service
     app.state.header_repairs = header_repairs
+    app.state.subtitle_generation = subtitle_generation
     app.state.hls_plan_executor = hls_plan_executor
     app.state.hls_service = hls_service
     app.state.mdns = mdns

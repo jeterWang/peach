@@ -1,6 +1,6 @@
 /* 字幕恢复与用户新选择的先后关系，不依赖浏览器解码器。 */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SubtitleSession } from '../src/player/subtitle-memory';
+import { SubtitleSession, preferredChineseTrack } from '../src/player/subtitle-memory';
 import type { VjsPlayer } from '../src/player/types';
 import { mountPlaybackRate, playerMemory } from '../src/player/memory';
 import { mountPlayerRotation } from '../src/player/rotation';
@@ -106,6 +106,19 @@ describe('统一播放文件记忆', () => {
 });
 
 describe('每部视频的字幕选择', () => {
+  it('没有选择过字幕时自动打开中文轨', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ selected: null, tracks: [], subtitle_chosen: false }))));
+    const view = mounted(), session = new SubtitleSession(view.player, view.video);
+    await session.ready;
+    const japanese = view.add('sidecar:ja');
+    Object.defineProperty(japanese, 'language', { value: 'ja' });
+    const chinese = view.add('sidecar:zh');
+    expect(chinese.mode).toBe('showing');
+    expect(japanese.mode).toBe('disabled');
+    expect(preferredChineseTrack([japanese, chinese])).toBe(chinese);
+    view.dispose();
+  });
+
   it('登记轨道的选择可通过字幕别名恢复', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ selected: 'sidecar:2', tracks: [] }))));
     const view = mounted(), session = new SubtitleSession(view.player, view.video);
@@ -144,7 +157,7 @@ describe('每部视频的字幕选择', () => {
     await session.ready;
     const track = view.add('sidecar:2');
     expect(track.mode).toBe('disabled');
-    expect(writes).toEqual([{ selected: null }]);
+    expect(writes).toEqual([{ selected: null, subtitle_chosen: true }]);
     view.dispose();
   });
 });

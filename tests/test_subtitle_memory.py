@@ -108,7 +108,7 @@ class SubtitleMemoryApiTests(unittest.TestCase):
     def test_authenticated_memory_roundtrip_and_video_isolation(self):
         with self.client as client:
             url = "/api/subtitles/memory?video=item:1"
-            self.assertEqual(client.get(url).json(), {"selected": None, "tracks": []})
+            self.assertEqual(client.get(url).json(), {"selected": None, "subtitle_chosen": False, "tracks": []})
             saved = client.put(url, json={"selected": "file:local", "track": {
                 "key": "file:local", "name": "字幕.srt", "text": VTT}})
             self.assertEqual(saved.status_code, 200)
@@ -139,7 +139,7 @@ class SubtitleMemoryApiTests(unittest.TestCase):
             subtitle_url = "/api/subtitles/memory?video=item:1"
             self.assertEqual(client.put(subtitle_url, json={"selected": "native:subtitles:zh:1"}).status_code, 200)
             self.assertEqual(client.get(url).json(), {"rotation": 270, "rate": 2,
-                             "selected": "native:subtitles:zh:1", "tracks": []})
+                             "selected": "native:subtitles:zh:1", "subtitle_chosen": True, "tracks": []})
             self.assertEqual(client.put(url, json={"rotation": 360}).status_code, 400)
             self.assertNotIn("rotation", client.get("/api/player/memory?video=item:2").json())
             self.assertEqual(client.put("/api/player/memory?video=item:999", json={"rate": 1}).status_code, 404)
