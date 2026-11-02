@@ -689,16 +689,35 @@ export function mountPlayerSpinner(player: VjsPlayer): void {
   spinner.innerHTML = '<span class="vjs-peach-spinner-container"><span class="vjs-peach-spinner-rotator"><span class="vjs-peach-spinner-left"><span class="vjs-peach-spinner-circle"></span></span><span class="vjs-peach-spinner-right"><span class="vjs-peach-spinner-circle"></span></span></span></span>';
 }
 
+type RemoteSubtitle = { id: string; legacy_id?: string | null; playable?: boolean; src: string; language?: string; label: string };
+type SubtitleList = { subtitles?: RemoteSubtitle[]; generation?: { pending?: boolean } };
+
+function attachSubtitleTracks(player: VjsPlayer, payload: SubtitleList | null): void {
+  const root = player.el?.();
+  const existing = new Set(root ? [...root.querySelectorAll('track')].map(node => node.id) : []);
+  (payload?.subtitles || []).filter(track => track.playable && !existing.has(track.id)).forEach(track => {
+    player.addRemoteTextTrack({ id: track.id, kind: 'subtitles', src: track.src, srclang: track.language || '', label: track.label, default: false,
+      ...(track.legacy_id ? { legacyId: track.legacy_id } : {}) }, true);
+  });
+}
+
 /** 本机资产的外挂字幕。服务端已经把 srt/ass/ssa 换成 WebVTT，这里只把它挂成 text track。
- *  一律不设 default：自动打开某一条等于替用户选了语言，而同一部片常有简体、繁体、日语三条。
- *  Peach 字幕菜单只在有轨的时候出现；轨道挂在原生 video 上，随同一枚元素保留。 */
+ *  轨道本身不设 default，避免和记忆里的关闭选择抢；没选过时由字幕会话打开中文轨。
+ *  后台还在生成时继续问列表，生成出来的中文轨挂上后走同一条自动打开。 */
 export function mountPlayerSubtitles(player: VjsPlayer, assetId: number): void {
-  (api(`/api/assets/${assetId}/subtitles`) as Promise<{ subtitles?: { id: string; legacy_id?: string | null; playable?: boolean; src: string; language?: string; label: string }[] } | null>)
-    .then((payload) => {
-      if (!player || player.isDisposed()) return;
-      (payload?.subtitles || []).filter((track) => track.playable).forEach((track) => {
-        player.addRemoteTextTrack({ id: track.id, kind: 'subtitles', src: track.src, srclang: track.language || '', label: track.label, default: false,
-          ...(track.legacy_id ? { legacyId: track.legacy_id } : {}) }, true);
-      });
-    }).catch(() => {});
+  const load = () => api(`/api/assets/${assetId}/subtitles`) as Promise<SubtitleList | null>;
+  load().then((payload) => {
+    if (!player || player.isDisposed()) return;
+    attachSubtitleTracks(player, payload);
+    if (!payload?.generation?.pending) return;
+    const timer = window.setInterval(() => {
+      if (player.isDisposed()) { window.clearInterval(timer); return; }
+      load().then((next) => {
+        if (player.isDisposed()) return;
+        attachSubtitleTracks(player, next);
+        if (!next?.generation?.pending) window.clearInterval(timer);
+      }).catch(() => {});
+    }, 4000);
+    player.on('dispose', () => window.clearInterval(timer));
+  }).catch(() => {});
 }

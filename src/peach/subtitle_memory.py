@@ -26,8 +26,10 @@ PREFERENCES = {"rotation", "rate", "caption_style"}
 
 def _validate_patch(patch: dict) -> None:
     """校验补丁字段与播放设置取值，字幕内容单独检查。"""
-    if not isinstance(patch, dict) or not patch or patch.keys() - (PREFERENCES | {"selected", "track"}):
+    if not isinstance(patch, dict) or not patch or patch.keys() - (PREFERENCES | {"selected", "track", "subtitle_chosen"}):
         raise ValueError("播放记忆字段无效")
+    if "subtitle_chosen" in patch and not isinstance(patch["subtitle_chosen"], bool):
+        raise ValueError("字幕选择无效")
     if "track" in patch and "selected" not in patch:
         raise ValueError("请选择字幕或关闭字幕")
     if "rotation" in patch and (type(patch["rotation"]) is not int or patch["rotation"] not in (0, 90, 180, 270)):
@@ -56,9 +58,13 @@ class SubtitleMemory:
 
     def read(self) -> dict:
         if not self.manifest.exists():
-            return {"selected": None, "tracks": []}
+            return {"selected": None, "tracks": [], "subtitle_chosen": False}
         value = json.loads(self.manifest.read_text(encoding="utf-8"))
-        return {"selected": value["selected"], "tracks": value["tracks"],
+        if "subtitle_chosen" in value:
+            chosen = bool(value["subtitle_chosen"])
+        else:
+            chosen = bool(value.get("selected"))
+        return {"selected": value["selected"], "tracks": value["tracks"], "subtitle_chosen": chosen,
                 **{key: value[key] for key in PREFERENCES if key in value}}
 
     def update(self, selected: str | None, track: dict | None = None) -> dict:
@@ -90,6 +96,10 @@ class SubtitleMemory:
                 value["tracks"].append({"key": key, "name": name, "file": filename})
             if "selected" in patch:
                 value["selected"] = selected
+                value["subtitle_chosen"] = (patch["subtitle_chosen"]
+                                            if isinstance(patch.get("subtitle_chosen"), bool) else True)
+            elif "subtitle_chosen" in patch:
+                value["subtitle_chosen"] = patch["subtitle_chosen"]
             for field in PREFERENCES & patch.keys():
                 if field == "caption_style":
                     value[field] = {**value.get(field, {}), **patch[field]}

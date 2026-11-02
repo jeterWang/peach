@@ -585,6 +585,51 @@ Peach 配置「媒体库与入库 → 视频预览」中的「抽帧解码方式
 
 播放器进度条可以复用视频旁的 Jellyfin Trickplay、Emby／Roku／Plex 导出的 BIF、WebVTT 图片索引、HLS 和 DASH 图片轨。已有产物只读，时间轴采集遇到可用预览会跳过。命名、读取范围和缺少时间索引时的处理见[已有时间轴预览](VIDEO_PREVIEWS.md)。
 
+### 中文字幕
+
+播放器打开影片时，会自动显示已经能播的中文轨：外挂文件名里的 `zh`、`chs`、`chi`、`zh-CN` 等 Peach 认得的标记，以及浏览器自己报出来的中文文本轨。手动选过轨道或关掉字幕之后，记住的是这次选择。
+
+还没有中文轨时，可以在后台生成。服务用 faster-whisper 按日语转写（默认模型是 [kotoba-tech/kotoba-whisper-v2.0-faster](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0-faster)，`language=ja`）。默认识别结果先整片交给 DeepSeek 校对日语：改正同音误识别、口癖碎句和明显幻听，背景音乐或没有对白的乱码留空；时间轴和条数保持不变。校对后的日语再整片译成口语简体中文。ReazonSpeech 不走这条链路，它不是 faster-whisper 能加载的权重。已经有中文外挂，或 ffprobe 能看到语言/标题标成中文的内嵌字幕轨，这一部不会再转写、也不会再调用 DeepSeek。图形内嵌轨（PGS、VobSub）只要标了中文也跳过；浏览器播不了的图形轨不会因此再生成一份文本字幕。
+
+生成结果是正片旁边的 `影片名.chs.srt`。播放列表把它当成普通外挂字幕，转成 WebVTT 后自动打开。正片目录不可写时，文件改放在数据目录的 `generated/subtitles/tracks/`，接口仍会把它挂上。
+
+在 `<Peach 数据目录>/config.toml` 里打开：
+
+```toml
+[subtitles]
+enabled = true
+model = "kotoba-tech/kotoba-whisper-v2.0-faster"
+device = "cpu"
+deepseek_model = "deepseek-flash"
+deepseek_url = "https://api.deepseek.com/chat/completions"
+polish_transcript = true
+```
+
+`device` 只能是 `cpu` 或 `cuda`。`deepseek_model` 默认是 `deepseek-flash`，也可以写成 `deepseek-v4-pro` 或其他模型名。`polish_transcript` 默认开启：先整片校对日语，再整片翻译。校对和翻译都是一次请求，输出上限都是 262144 token。对白估测超过约 90 万 token（输入加上输出上限）时，改为 600 行一块，单块仍放不下则用 400 行；校对块带上已改过的短称呼，翻译块带上已译称呼。`glossary` 可指向一份 UTF-8 术语表，每行 `日文<制表符>中文`，`#` 开头是注释；同名日文覆盖内置称呼，只在翻译时替换。`system_prompt` 留空时用内置提示：口语、同一部片子里的称呼和关系保持一致、不改写成书面语、不添加原文没有的情节。环境变量 `PEACH_SUBTITLES_ENABLED`、`PEACH_SUBTITLES_MODEL`、`PEACH_SUBTITLES_DEVICE`、`PEACH_SUBTITLES_DEEPSEEK_MODEL`、`PEACH_SUBTITLES_URL`、`PEACH_SUBTITLES_POLISH` 覆盖文件里的对应项。
+
+DeepSeek 密钥只读环境变量 `DEEPSEEK_API_KEY`，不要写进 `config.toml`、账本或日志。改完用户环境变量后要重新打开终端，再启动 Peach，进程才看得到。
+
+转写组件不在默认安装里。在仓库目录执行：
+
+```powershell
+uv sync --locked --extra asr --python 3.14
+```
+
+这组依赖把 PyAV 钉在 18.1.0。faster-whisper 1.2.1 解码时会把 `metadata_errors` 传给 `av.open`；PyAV 19 不再接受这个参数，Windows 上会在打开音轨时失败。如果环境里已经装了 `av` 19，再执行一次上面的同步，把它换成 18.1.0。
+
+首次生成会下载 kotoba-whisper 权重（体积大约 1GB 量级，以 Hugging Face 上的文件为准），并按 DeepSeek 的用量计费。`peach serve` 起来之后，会把还没有中文外挂记录的视频排进后台队列，一部接一部处理；正在打开的那一部插到队首。队列在数据目录的 `state/subtitle-generation.json`。扫描新入库的视频也会追加。失败的一部不会在播放器轮询里自动重试；补上密钥或依赖后重新打开这部影片会再排一次「未设置 DEEPSEEK_API_KEY」，其他失败要重启服务后才会重新排队。
+
+安装版程序不会因为拉取这份源码而换成新代码。要用现有馆藏试这条功能：先退出正在跑的 Peach，让 `8900` 端口空出来，再用本仓库的虚拟环境指向原来的数据目录。Windows 安装版的程序在 `%LOCALAPPDATA%\Programs\Peach`，数据在 `%LOCALAPPDATA%\Peach\peach-data`。
+
+```powershell
+$env:PEACH_DATA_ROOT = "$env:LOCALAPPDATA\Peach\peach-data"
+$env:PEACH_FFMPEG = "$env:LOCALAPPDATA\Programs\Peach\tools\ffmpeg\bin\ffmpeg.exe"
+$env:PEACH_FFPROBE = "$env:LOCALAPPDATA\Programs\Peach\tools\ffmpeg\bin\ffprobe.exe"
+& .\.venv\Scripts\peach.exe serve --host 0.0.0.0 --port 8900
+```
+
+`PEACH_FFMPEG` 只在源码进程找不到 FFmpeg 时需要；数据目录或 PATH 里已有则可省略。安装目录里的文件名若不是上面这一条，在 `%LOCALAPPDATA%\Programs\Peach` 里找 `ffmpeg.exe`。`config.toml` 里如果已经写了监听地址和端口，不传 `--host` 和 `--port` 也会沿用。浏览器打开原来的地址，中文轨在生成完成后出现，不必再手动加载字幕。
+
 ## 文件整理
 
 在「数据管理 → 整理」选择来源。右侧路径框可直接输入目录，旁边的文件夹按钮在运行 Peach 的电脑上打开目录选择窗口；远程访问或系统选择窗口不可用时，直接输入路径。路径留空表示整个来源，指定目录时包含其子目录。路径须属于所选来源；切换来源会清空路径。
