@@ -23,6 +23,7 @@ import { MediaProcessingSettings, PlaybackTranscodeSettings } from './media-proc
 import { CodePatternSettings } from './code-pattern-settings';
 import { NetworkSettings } from './network-settings';
 import { SourceSettings } from './source-settings';
+import { SubtitleGenerationSettings } from './subtitle-generation-settings';
 import { groupRoot } from './configuration-panel';
 import { downloadsShape, maintenanceShape, networkShape } from './configuration-shape';
 import { rememberShape } from '../../configuration-skeleton';
@@ -129,6 +130,7 @@ function ConfigurationGroups(
         {issues(['startup', 'uninstall', 'storage', 'remote_reporting', 'library_sharing', 'updates', 'update_job', 'automatic_updates', 'facts'])}
         <GeneralSettings {...group} />
         <PlaybackTranscodeSettings receipt={receipt} />
+        <SubtitleGenerationSettings active={panel.active} receipt={receipt} />
         <MaintenanceSettings {...group} reopenTutorial={reopenTutorial} />
       </div>,
     },

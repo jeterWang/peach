@@ -1,7 +1,7 @@
 (function() {
 	try {
 		var e = typeof globalThis < "u" ? globalThis : typeof window < "u" ? window : typeof global < "u" ? global : typeof self < "u" ? self : {}, t = new e.Error().stack;
-		t && (e._sentryDebugIds = e._sentryDebugIds || {}, e._sentryDebugIds[t] = "1f937643-2375-4258-a8ef-d230a94de6c6", e._sentryDebugIdIdentifier = "sentry-dbid-1f937643-2375-4258-a8ef-d230a94de6c6");
+		t && (e._sentryDebugIds = e._sentryDebugIds || {}, e._sentryDebugIds[t] = "ea21c562-1c59-4a10-8ebf-7ef0b6d823dd", e._sentryDebugIdIdentifier = "sentry-dbid-ea21c562-1c59-4a10-8ebf-7ef0b6d823dd");
 	} catch {}
 })();
 import { AnimatedItems as e, Cell as t, ChartBackground as n, ChartContainer as r, ChartLegend as i, ChartLegendContent as a, ChartTip as o, ChartTooltip as s, ChartTooltipContent as c, Curve as l, DATA_ITEM_GRAPHICAL_ITEM_ID_ATTRIBUTE_NAME as u, DATA_ITEM_INDEX_ATTRIBUTE_NAME as d, DefaultZIndexes as f, EvilBarChart as p, LabelList as m, LabelListFromLabelProp as h, Layer as g, LoadingIndicator as _, PolarChart as v, PolarLabelContextProvider as y, PolarLabelListContextProvider as b, RegisterGraphicalItemId as x, Sector as S, SetPolarGraphicalItem as C, SetPolarLegendPayload as w, SetTooltipEntrySettings as T, Shape as ee, TIP_SWATCH as te, Text as ne, ZIndexLayer as re, adaptEventsOfChild as ie, arrayTooltipSearcher as ae, createSelector as oe, defaultPolarChartProps as se, findAllByType as ce, get as le, getClassNameFromUnknown as ue, getColorsCount as de, getMaxRadius as fe, getPercentValue as pe, getTooltipNameProp as me, getValueByDataKey as he, interpolate as ge, isNumber as _e, matchAppend as ve, mathSign as ye, polarToCartesian as be, resolveDefaultProps as xe, selectActiveTooltipDataKey as Se, selectActiveTooltipGraphicalItemId as Ce, selectActiveTooltipIndex as we, selectChartDataAndAlwaysIgnoreIndexes as Te, selectChartOffsetInternal as Ee, selectUnfilteredPolarItems as De, svgPropertiesNoEvents as Oe, svgPropertiesNoEventsFromUnknown as ke, tone as Ae, useAnimationCallbacks as je, useAppSelector as Me, useMouseClickItemDispatch as Ne, useMouseEnterItemDispatch as Pe, useMouseLeaveItemDispatch as Fe, usePolarChartLayout as Ie } from "./peach-app.chart-tip-CRxYp6KT.js";
@@ -5256,8 +5256,142 @@ function Xo({ data: e, receipt: t, panel: n, issues: r }) {
 		]
 	});
 }
+// src/react/settings/subtitle-generation-settings.tsx
+var Zo = ["subtitles", "generation"], Qo = "/api/subtitles/generation", $o = (e) => W(Qo, e);
+function es({ item: e }) {
+	return /* @__PURE__ */ (0, Q.jsx)("a", {
+		className: "min-w-0 flex-1 wrap-anywhere text-body-medium text-text-primary",
+		href: `/assets/${e.id}`,
+		children: e.name
+	});
+}
+function ts({ active: e, receipt: t }) {
+	let n = X({
+		queryKey: Zo,
+		queryFn: ({ signal: e }) => $o(e),
+		enabled: e,
+		refetchInterval: e ? 4e3 : !1
+	}), r = Y(), i = n.data;
+	(0, Z.useEffect)(() => {
+		e && window.location.hash === "#subtitleGeneration" && document.getElementById("subtitleGeneration")?.scrollIntoView({ block: "start" });
+	}, [e, i]);
+	let a = (e, n) => {
+		bn.setQueryData(Zo, e), t(n);
+	}, o = (e, t, n, i) => {
+		r.run(e, (e) => G(t, n, "POST", e), (e) => a(e, i));
+	}, s = i?.counts;
+	return /* @__PURE__ */ (0, Q.jsxs)(L, {
+		id: "subtitleGeneration",
+		title: "中文字幕",
+		children: [/* @__PURE__ */ (0, Q.jsx)(I, { children: /* @__PURE__ */ (0, Q.jsx)(B, {
+			label: "自动生成",
+			description: "缺中文字幕的日语影片排队转写并翻译。关闭后当前这一部做完就停。",
+			children: /* @__PURE__ */ (0, Q.jsx)(U, {
+				"aria-label": "自动生成中文字幕",
+				isSelected: !!i?.enabled,
+				isDisabled: !i || !!r.busy,
+				onChange: (e) => o("enabled", Qo, { enabled: e }, e ? "已打开中文字幕生成" : "已关闭中文字幕生成")
+			})
+		}) }), /* @__PURE__ */ (0, Q.jsxs)(V, {
+			divided: !0,
+			children: [
+				n.isError ? /* @__PURE__ */ (0, Q.jsx)(k, { children: q(n.error) }) : null,
+				r.error ? /* @__PURE__ */ (0, Q.jsx)(k, { children: r.error }) : null,
+				i?.notice ? /* @__PURE__ */ (0, Q.jsx)(N, {
+					role: "status",
+					children: i.notice
+				}) : null,
+				i?.unavailable ? /* @__PURE__ */ (0, Q.jsx)(N, {
+					role: "status",
+					children: i.unavailable
+				}) : null,
+				s ? /* @__PURE__ */ (0, Q.jsxs)(N, {
+					role: "status",
+					children: [
+						"排队 ",
+						s.queued,
+						" · 生成中 ",
+						s.running,
+						" · 失败 ",
+						s.failed,
+						" · 已完成 ",
+						s.ready,
+						" · 已忽略 ",
+						s.skipped
+					]
+				}) : null,
+				i?.current ? /* @__PURE__ */ (0, Q.jsxs)("div", {
+					className: "flex flex-wrap items-center gap-2",
+					children: [
+						/* @__PURE__ */ (0, Q.jsx)("span", {
+							className: "text-body-2-regular text-text-secondary",
+							children: "正在生成"
+						}),
+						/* @__PURE__ */ (0, Q.jsx)(es, { item: i.current }),
+						/* @__PURE__ */ (0, Q.jsx)(E, {
+							size: "small",
+							variant: "secondary",
+							disabled: !!r.busy,
+							onClick: () => o(`ignore-${i.current.id}`, `${Qo}/ignore`, { id: i.current.id }, "已忽略正在生成的作品"),
+							children: "忽略"
+						})
+					]
+				}) : /* @__PURE__ */ (0, Q.jsx)(N, { children: "当前没有正在生成的作品。" }),
+				/* @__PURE__ */ (0, Q.jsx)(ns, {
+					title: "排队",
+					items: i?.queued || [],
+					empty: "队列是空的。",
+					action: "忽略",
+					busy: r.busy,
+					onAction: (e) => o(`ignore-${e.id}`, `${Qo}/ignore`, { id: e.id }, "已忽略")
+				}),
+				/* @__PURE__ */ (0, Q.jsx)(ns, {
+					title: "失败",
+					items: i?.failed || [],
+					empty: "没有失败的作品。",
+					action: "重试",
+					busy: r.busy,
+					onAction: (e) => o(`retry-${e.id}`, `${Qo}/retry`, { id: e.id }, "已重新排队")
+				}),
+				/* @__PURE__ */ (0, Q.jsx)(ns, {
+					title: "已忽略",
+					items: i?.skipped || [],
+					empty: "没有已忽略的作品。",
+					action: "重试",
+					busy: r.busy,
+					onAction: (e) => o(`retry-${e.id}`, `${Qo}/retry`, { id: e.id }, "已重新排队")
+				})
+			]
+		})]
+	});
+}
+function ns({ title: e, items: t, empty: n, action: r, busy: i, onAction: a }) {
+	return /* @__PURE__ */ (0, Q.jsxs)("div", { children: [/* @__PURE__ */ (0, Q.jsx)("p", {
+		className: "text-body-medium text-text-primary",
+		children: e
+	}), t.length ? /* @__PURE__ */ (0, Q.jsx)("ul", {
+		className: "mt-1 flex flex-col",
+		children: t.map((e) => /* @__PURE__ */ (0, Q.jsxs)("li", {
+			className: "flex flex-wrap items-center gap-2 border-t border-separator-border py-2",
+			children: [
+				/* @__PURE__ */ (0, Q.jsx)(es, { item: e }),
+				e.message ? /* @__PURE__ */ (0, Q.jsx)("span", {
+					className: "text-body-2-regular text-text-secondary",
+					children: e.message
+				}) : null,
+				/* @__PURE__ */ (0, Q.jsx)(E, {
+					size: "small",
+					variant: "secondary",
+					disabled: !!i,
+					onClick: () => a(e),
+					children: r
+				})
+			]
+		}, e.id))
+	}) : /* @__PURE__ */ (0, Q.jsx)(N, { children: n })] });
+}
 // src/react/settings/configuration-shape.ts
-function Zo(e) {
+function rs(e) {
 	let t = e.downloads;
 	if (!t) return null;
 	let n = t.media_sources ?? [];
@@ -5270,7 +5404,7 @@ function Zo(e) {
 		browserLogin: t.pikpak_browser.available
 	};
 }
-function Qo(e) {
+function is(e) {
 	let t = e.tunnel;
 	return {
 		port: !!(e.editable && e.port_editable !== !1),
@@ -5284,7 +5418,7 @@ function Qo(e) {
 		tunnelNote: !!(t && (!t.available || t.state === "starting" || t.state === "running" && t.url))
 	};
 }
-function $o(e) {
+function as(e) {
 	let t = e.updates, n = e.update_job?.state ?? "idle", r = !t || t.state === "unchecked" && !t.checked_at && n === "idle", i = +!!t?.package_kind + (r ? 0 : +!!t?.checked_at + (t?.state === "unchecked" ? 0 : 1) + (n === "idle" ? 0 : 1)), a = e.automatic_updates, o = e.storage;
 	return {
 		releaseFacts: t?.package_kind ? 5 : 4,
@@ -5305,12 +5439,12 @@ function $o(e) {
 	};
 }
 // src/react/settings/configuration-page.tsx
-function es({ receipt: e, reopenTutorial: t, section: n = "", diagnostics: r }) {
+function os({ receipt: e, reopenTutorial: t, section: n = "", diagnostics: r }) {
 	let i = X({
 		queryKey: Ze,
 		queryFn: ({ signal: e }) => nn(e)
 	}), a = i.data;
-	return a ? /* @__PURE__ */ (0, Q.jsx)(rs, {
+	return a ? /* @__PURE__ */ (0, Q.jsx)(ls, {
 		data: a,
 		receipt: e,
 		reopenTutorial: t,
@@ -5329,7 +5463,7 @@ function es({ receipt: e, reopenTutorial: t, section: n = "", diagnostics: r }) 
 		})
 	});
 }
-function ts({ data: e, sections: t, reload: n, refreshing: r }) {
+function ss({ data: e, sections: t, reload: n, refreshing: r }) {
 	return /* @__PURE__ */ (0, Q.jsx)(Q.Fragment, { children: t.map((t) => {
 		let i = e.section_errors?.[t];
 		return i ? /* @__PURE__ */ (0, Q.jsx)(F, {
@@ -5346,14 +5480,14 @@ function ts({ data: e, sections: t, reload: n, refreshing: r }) {
 		}, t) : null;
 	}) });
 }
-var ns = 0;
-function rs({ data: e, receipt: t, reopenTutorial: n, section: r, diagnostics: i, reload: a, refreshing: o }) {
-	let [s] = (0, Z.useState)(() => `board-tabs-${++ns}`), [c, l] = (0, Z.useState)(r), u = (0, Z.useRef)(null), d = (0, Z.useRef)(c);
+var cs = 0;
+function ls({ data: e, receipt: t, reopenTutorial: n, section: r, diagnostics: i, reload: a, refreshing: o }) {
+	let [s] = (0, Z.useState)(() => `board-tabs-${++cs}`), [c, l] = (0, Z.useState)(r), u = (0, Z.useRef)(null), d = (0, Z.useRef)(c);
 	(0, Z.useEffect)(() => {
 		l(r);
 	}, [r]), (0, Z.useEffect)(() => {
-		let t = Zo(e);
-		t && Sn("downloads", t), Sn("network", Qo(e)), Sn("maintenance", $o(e));
+		let t = rs(e);
+		t && Sn("downloads", t), Sn("network", is(e)), Sn("maintenance", as(e));
 	}, [e]), (0, Z.useLayoutEffect)(() => {
 		if (d.current === c) return;
 		d.current = c;
@@ -5377,7 +5511,7 @@ function rs({ data: e, receipt: t, reopenTutorial: n, section: r, diagnostics: i
 	let h = (0, Z.useRef)([]), g = {
 		data: e,
 		receipt: t
-	}, _ = (t) => /* @__PURE__ */ (0, Q.jsx)(ts, {
+	}, _ = (t) => /* @__PURE__ */ (0, Q.jsx)(ss, {
 		data: e,
 		sections: t,
 		reload: a,
@@ -5448,6 +5582,10 @@ function rs({ data: e, receipt: t, reopenTutorial: n, section: r, diagnostics: i
 					]),
 					/* @__PURE__ */ (0, Q.jsx)(ba, { ...g }),
 					/* @__PURE__ */ (0, Q.jsx)(po, { receipt: t }),
+					/* @__PURE__ */ (0, Q.jsx)(ts, {
+						active: e.active,
+						receipt: t
+					}),
 					/* @__PURE__ */ (0, Q.jsx)(ca, {
 						...g,
 						reopenTutorial: n
@@ -5509,6 +5647,6 @@ function rs({ data: e, receipt: t, reopenTutorial: n, section: r, diagnostics: i
 		})] }, e))]
 	});
 }
-export { es as ConfigurationPage };
+export { os as ConfigurationPage };
 
-//# debugId=1f937643-2375-4258-a8ef-d230a94de6c6
+//# debugId=ea21c562-1c59-4a10-8ebf-7ef0b6d823dd

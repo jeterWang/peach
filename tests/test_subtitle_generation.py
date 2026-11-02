@@ -222,6 +222,25 @@ class GenerationTests(unittest.TestCase):
                 "VALUES(2,'local','R:/b.chs.srt','b.chs.srt','zh-Hans','srt','suffix','2026-01-01','2026-01-01')")
         self.assertEqual(videos_without_chinese(database), [1])
 
+    def test_ignore_and_retry_move_the_queue(self):
+        self.service._persist_enabled = lambda _enabled: ""
+        self.service._set(4, "failed", "译文是空的")
+        self.assertEqual(self.service.snapshot()["counts"]["failed"], 1)
+        retried = self.service.retry(4)
+        self.assertEqual(retried["queued"][0]["id"], 4)
+        self.assertEqual(retried["counts"]["failed"], 0)
+        ignored = self.service.ignore(4)
+        self.assertEqual(ignored["counts"]["queued"], 0)
+        self.assertEqual(ignored["skipped"][0]["message"], "已忽略")
+        self.assertEqual(ignored["counts"]["skipped"], 1)
+
+    def test_the_switch_applies_before_the_config_file(self):
+        self.service._persist_enabled = lambda _enabled: "只在本次运行有效"
+        closed = self.service.set_enabled(False)
+        self.assertFalse(closed["enabled"])
+        self.assertEqual(closed["notice"], "只在本次运行有效")
+        self.assertFalse(self.service.effective_enabled())
+
 
 class ListingTests(unittest.TestCase):
     def test_the_subtitle_list_reports_generation_without_starting_work(self):
@@ -243,5 +262,17 @@ class ListingTests(unittest.TestCase):
                 db_path=database, configured=True, token="",
                 allowed_media_roots=(media,)))) as client:
             payload = client.get("/api/assets/1/subtitles").json()
+            service = client.app.state.subtitle_generation
+            service.stop()
+            service._persist_enabled = lambda _enabled: ""
+            service._set(1, "failed", "没有识别到日语对白")
+            status = client.get("/api/subtitles/generation").json()
+            self.assertEqual(status["failed"][0]["name"], "ABP-758.mp4")
+            self.assertEqual(client.post("/api/subtitles/generation", json={"enabled": False}).json()["enabled"], False)
+            self.assertEqual(client.post("/api/subtitles/generation/retry", json={"id": 1}).json()["counts"]["queued"], 1)
+            ignored = client.post("/api/subtitles/generation/ignore", json={"id": 1}).json()
+            self.assertEqual(ignored["counts"]["skipped"], 1)
+            self.assertEqual(client.post("/api/subtitles/generation", json={"enabled": "yes"}).status_code, 400)
+            service.stop()
         self.assertEqual(payload["generation"]["pending"], False)
         self.assertIn("subtitles", payload)

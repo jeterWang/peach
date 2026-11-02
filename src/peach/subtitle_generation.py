@@ -376,6 +376,59 @@ def _queue_path(db) -> Path:
     return state_for(Path(db)).parent / "subtitle-generation.json"
 
 
+def _read_queue(db) -> dict:
+    path = _queue_path(db)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _item_rows(value) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    rows = []
+    for item in value:
+        if isinstance(item, dict) and isinstance(item.get("id"), int) and item["id"] > 0:
+            rows.append({"id": item["id"], "message": str(item.get("message") or "")})
+    return rows
+
+
+def _named(asset_id: int, names: dict[int, str], status: str, message: str) -> dict:
+    return {
+        "id": asset_id, "name": names.get(asset_id) or f"作品 {asset_id}",
+        "status": status, "message": message,
+    }
+
+
+def persist_subtitle_enabled(enabled: bool) -> str:
+    """把开关写进设置文件。环境变量仍会在下次启动时盖过文件。"""
+    from dataclasses import replace
+
+    from .settings_file import load_config, reset_cache, write
+    notice = ""
+    if os.environ.get("PEACH_SUBTITLES_ENABLED", "").strip():
+        notice = "环境变量 PEACH_SUBTITLES_ENABLED 会在下次启动时覆盖这个开关"
+    try:
+        config = load_config()
+    except Exception:
+        return "配置文件未写入，开关只在本次运行有效"
+    if not config.present:
+        return notice or "尚未完成首次设置，开关只在本次运行有效"
+    if config.subtitles.enabled == enabled:
+        return notice
+    updated = replace(config, subtitles=replace(config.subtitles, enabled=enabled))
+    try:
+        with FileLock(str(config.path.with_suffix(".lock")), timeout=2):
+            write(updated, force=True)
+        reset_cache()
+    except Exception:
+        LOGGER.exception("中文字幕开关没有写进配置")
+        return "配置文件未写入，开关只在本次运行有效"
+    return notice
+
+
 def _mutate_queue(db, change: Callable[[dict], None]) -> None:
     path = _queue_path(db)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -414,10 +467,15 @@ def enqueue_ids(db, ids, *, front: bool = False) -> None:
 
 
 def note_new_assets(db, ids) -> None:
-    """扫描新片后排队。配置关闭时什么都不做；服务在另一个进程里也会看见队列文件。"""
-    from .settings_file import active
-    if not active().subtitles.enabled:
-        return
+    """扫描新片后排队。生成关闭时什么都不做；服务在另一个进程里也会看见队列文件。"""
+    service = current()
+    if service is not None:
+        if not service.effective_enabled():
+            return
+    else:
+        from .settings_file import active
+        if not active().subtitles.enabled:
+            return
     wanted = [int(item) for item in ids if isinstance(item, int) and item > 0]
     if not wanted:
         return
@@ -440,7 +498,8 @@ class SubtitleService:
     def __init__(self, *, root: Path, database_path: Path, media=None, ffmpeg=None,
                  settings: SubtitleSettings | Callable[[], SubtitleSettings] | None = None,
                  translator: Callable | None = None, transcriber: Callable | None = None,
-                 extractor: Callable | None = None, embedded: Callable | None = None):
+                 extractor: Callable | None = None, embedded: Callable | None = None,
+                 persist_enabled: Callable[[bool], str] | None = None):
         self.root = Path(root)
         self.database_path = Path(database_path)
         self.media = media
@@ -458,6 +517,10 @@ class SubtitleService:
         self._swept = False
         self._model = None
         self._model_key: tuple[str, str] | None = None
+        self._enabled: bool | None = None
+        self._current_id: int | None = None
+        self._ignored: set[int] = set()
+        self._persist_enabled = persist_enabled if persist_enabled is not None else persist_subtitle_enabled
 
     def settings(self) -> SubtitleSettings:
         if self._settings is None:
@@ -467,9 +530,82 @@ class SubtitleService:
             return self._settings()
         return self._settings
 
+    def effective_enabled(self) -> bool:
+        """页面开关优先。没动过开关时跟配置文件和环境变量走。"""
+        if self._enabled is not None:
+            return self._enabled
+        return bool(self.settings().enabled)
+
+    def set_enabled(self, enabled: bool) -> dict:
+        """打开或关闭自动生成。配置文件写不上时，开关仍在本次运行里生效。"""
+        self._enabled = bool(enabled)
+        notice = ""
+        try:
+            notice = self._persist_enabled(self._enabled)
+        except Exception:
+            LOGGER.exception("中文字幕开关没有写进配置")
+            notice = "配置文件未写入，开关只在本次运行有效"
+        if self._enabled:
+            self.wake()
+        return self.snapshot(notice=notice)
+
+    def retry(self, asset_id: int) -> dict:
+        """把这一部放回队首。失败和已忽略的都能再排。"""
+        asset_id = int(asset_id)
+        self._ignored.discard(asset_id)
+        enqueue_ids(self.database_path, [asset_id], front=True)
+        self._set(asset_id, "queued", "")
+        self.wake()
+        return self.snapshot()
+
+    def ignore(self, asset_id: int) -> dict:
+        """移出队列。正在生成的一部在写出字幕前停掉。"""
+        asset_id = int(asset_id)
+        self._ignored.add(asset_id)
+        self._set(asset_id, "skipped", "已忽略")
+        return self.snapshot()
+
+    def snapshot(self, notice: str = "") -> dict:
+        """给管理页：开关、数量、正在生成的一部，以及失败、排队和已忽略。"""
+        payload = _read_queue(self.database_path)
+        queue = [int(item) for item in payload.get("queue", []) if isinstance(item, int) and item > 0]
+        failed = _item_rows(payload.get("failed"))
+        skipped = _item_rows(payload.get("skipped"))
+        with self._guard:
+            current_id = self._current_id
+        if current_id in queue:
+            queue = [item for item in queue if item != current_id]
+        ids = [item for item in [current_id, *queue, *(row["id"] for row in failed), *(row["id"] for row in skipped)] if item]
+        names = self._names(ids)
+        unavailable = ""
+        if self.effective_enabled():
+            unavailable = self._unavailable(self.settings())
+        text = notice or self._standing_notice()
+        return {
+            "enabled": self.effective_enabled(),
+            "notice": text,
+            "unavailable": unavailable,
+            "counts": {
+                "queued": len(queue),
+                "running": 1 if current_id else 0,
+                "failed": len(failed),
+                "ready": int(payload.get("ready") or 0),
+                "skipped": len(skipped),
+            },
+            "current": _named(current_id, names, "running", "") if current_id else None,
+            "queued": [_named(item, names, "queued", "") for item in queue[:40]],
+            "failed": [_named(row["id"], names, "failed", row["message"]) for row in failed[:40]],
+            "skipped": [_named(row["id"], names, "skipped", row["message"]) for row in skipped[:40]],
+        }
+
     def start(self) -> None:
-        if not self.settings().enabled:
+        if not self.effective_enabled():
             return
+        with self._guard:
+            alive = self._thread is not None and self._thread.is_alive()
+        if alive:
+            return
+        self._requeue_interrupted()
         with self._guard:
             if self._thread is not None and self._thread.is_alive():
                 return
@@ -497,7 +633,7 @@ class SubtitleService:
         current = self._status_of(asset_id)
         if current in {"queued", "running"}:
             return self._public(settings, current, "", pending=True)
-        if not settings.enabled:
+        if not self.effective_enabled():
             return self._public(settings, "idle", "", pending=False)
         reason = self._unavailable(settings)
         if reason:
@@ -538,7 +674,7 @@ class SubtitleService:
             except (OSError, sqlite3.Error):
                 LOGGER.exception("中文字幕队列没有列出来")
         while not self._stop.is_set():
-            if not self.settings().enabled:
+            if not self.effective_enabled():
                 self._wake.wait(2)
                 self._wake.clear()
                 continue
@@ -564,7 +700,16 @@ class SubtitleService:
             return None
         return found[0] if found else None
 
+    def _abandoned(self, asset_id: int) -> bool:
+        if asset_id not in self._ignored:
+            return False
+        self._ignored.discard(asset_id)
+        self._set(asset_id, "skipped", "已忽略")
+        return True
+
     def _run_one(self, asset_id: int) -> None:
+        if self._abandoned(asset_id):
+            return
         self._set(asset_id, "running", "")
         wav = self.root / "work" / f"{asset_id}.wav"
         try:
@@ -577,13 +722,15 @@ class SubtitleService:
                 return
             reason = self._skip_reason(video, asset_id)
             if reason:
-                self._set(asset_id, "ready" if reason == "已是最新" else "skipped", "" if reason == "已是最新" else reason)
+                self._set(asset_id, "ready" if reason == "已是最新" else "skipped", reason)
                 return
             settings = self.settings()
             self._extract(video.path, wav)
             cues = self._transcribe(wav, settings)
             if not cues:
                 raise SubtitleGenerationError("没有识别到日语对白")
+            if self._abandoned(asset_id):
+                return
             translated = self._translator([text for _start, _end, text in cues], settings)
             if len(translated) != len(cues):
                 raise SubtitleGenerationError("译文行数与原文不一致")
@@ -707,6 +854,14 @@ class SubtitleService:
     def _set(self, asset_id: int, status: str, message: str) -> None:
         with self._guard:
             self._status[asset_id] = {"status": status, "message": message}
+            if status == "running":
+                self._current_id = asset_id
+            elif self._current_id == asset_id:
+                self._current_id = None
+        try:
+            self._record(asset_id, status, message)
+        except OSError:
+            LOGGER.exception("中文字幕队列状态没有写上")
 
     def _status_of(self, asset_id: int) -> str:
         with self._guard:
@@ -718,5 +873,64 @@ class SubtitleService:
 
     def _public(self, settings: SubtitleSettings, status: str, message: str, *, pending: bool) -> dict:
         return {
-            "enabled": settings.enabled, "pending": pending, "status": status, "message": message,
+            "enabled": self.effective_enabled(), "pending": pending, "status": status, "message": message,
         }
+
+    def _standing_notice(self) -> str:
+        if os.environ.get("PEACH_SUBTITLES_ENABLED", "").strip():
+            return "环境变量 PEACH_SUBTITLES_ENABLED 会在下次启动时覆盖这个开关"
+        return ""
+
+    def _names(self, ids: list[int]) -> dict[int, str]:
+        wanted = list(dict.fromkeys(int(item) for item in ids if item))
+        if not wanted or not self.database_path.is_file():
+            return {}
+        found: dict[int, str] = {}
+        with closing(sqlite3.connect(self.database_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            for offset in range(0, len(wanted), 900):
+                batch = wanted[offset:offset + 900]
+                for row in connection.execute(
+                        "SELECT id, name FROM asset WHERE id IN (" + ",".join("?" * len(batch)) + ")", batch):
+                    found[int(row[0])] = str(row[1] or "")
+        return found
+
+    def _requeue_interrupted(self) -> None:
+        current = _read_queue(self.database_path).get("current")
+        if not isinstance(current, int) or current <= 0:
+            return
+        enqueue_ids(self.database_path, [current], front=True)
+
+        def change(payload: dict) -> None:
+            if payload.get("current") == current:
+                payload["current"] = None
+
+        try:
+            _mutate_queue(self.database_path, change)
+        except OSError:
+            LOGGER.exception("中断的中文字幕任务没有放回队列")
+
+    def _record(self, asset_id: int, status: str, message: str) -> None:
+        def change(payload: dict) -> None:
+            failed = [item for item in _item_rows(payload.get("failed")) if item["id"] != asset_id]
+            skipped = [item for item in _item_rows(payload.get("skipped")) if item["id"] != asset_id]
+            queue = [item for item in payload.get("queue", []) if isinstance(item, int)]
+            if status == "queued":
+                if asset_id not in queue:
+                    queue.append(asset_id)
+            elif status == "running":
+                payload["current"] = asset_id
+            else:
+                queue = [item for item in queue if item != asset_id]
+                if status == "failed":
+                    failed.insert(0, {"id": asset_id, "message": message[:200]})
+                elif status == "skipped":
+                    skipped.insert(0, {"id": asset_id, "message": message[:200]})
+                elif status == "ready" and not message:
+                    payload["ready"] = int(payload.get("ready") or 0) + 1
+            if status != "running" and payload.get("current") == asset_id:
+                payload["current"] = None
+            payload["queue"] = queue
+            payload["failed"] = failed[:80]
+            payload["skipped"] = skipped[:80]
+
+        _mutate_queue(self.database_path, change)
