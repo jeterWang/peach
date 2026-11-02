@@ -13,6 +13,11 @@ import { timelineFrame, type TimelineSheets } from './timeline';
 import { mountPlayerRotation } from './rotation';
 import { mountPlayerPipControl } from './pip';
 import { mountPlaybackRate, playerMemory } from './memory';
+import {
+  elementFullscreenActive, elementFullscreenEnabled, enterWebkitVideoFullscreen, exitWebkitVideoFullscreen,
+  planPhoneFullscreen, portraitPhone, requestElementFullscreen, webkitVideoFullscreenActive,
+  webkitVideoFullscreenAvailable, type WebkitFullscreenVideo,
+} from './phone-fullscreen';
 
 type TooltipSync = (label?: string, aria?: string) => void;
 
@@ -513,14 +518,43 @@ function mountPlayerChromeLayout(player: VjsPlayer): void {
   /* CSS 的 `.vjs-fullscreen` 只能覆盖 Video.js 已经同步状态类的路径。实际浏览器还可能
      走 full-window 回退，或者先触发 fullscreenchange、下一帧才完成 class 更新。把播放器
      自己的 `isFullscreen()` 结果登记到 DOM，画面填充不再依赖某一个实现细节类名。 */
+  const tech = () => player.el().querySelector('video') as (HTMLVideoElement & WebkitFullscreenVideo) | null;
   const syncFullscreenState = () => {
-    const active = !!player.isFullscreen();
+    const video = tech();
+    const active = !!player.isFullscreen() || (!!video && webkitVideoFullscreenActive(video));
     player.el().toggleAttribute('data-peach-fullscreen', active);
     fullscreenUse?.setAttribute('href', active ? '#i-player-fullscreen-exit' : '#i-player-fullscreen-enter');
     syncFullscreenTooltip(active ? '退出全屏' : '全屏');
     resizeSoon(player);
   };
   player.on(['fullscreenchange', 'enterFullWindow', 'exitFullWindow'], syncFullscreenState);
+  const video = tech();
+  video?.addEventListener('webkitbeginfullscreen', syncFullscreenState);
+  video?.addEventListener('webkitendfullscreen', syncFullscreenState);
+  video?.addEventListener('webkitpresentationmodechanged', syncFullscreenState);
+  /* 竖屏手机上元素全屏经常失败。具备视频 webkit 全屏时先试元素全屏，失败再进系统全屏。
+     宽屏没有这条：监听直接返回，仍由 Video.js 的全屏按钮处理。 */
+  fullscreen?.addEventListener('click', (event) => {
+    const current = tech();
+    if (!current) return;
+    const plan = planPhoneFullscreen({
+      portrait: portraitPhone(),
+      webkit: webkitVideoFullscreenAvailable(current),
+      elementFullscreen: elementFullscreenEnabled(),
+      elementActive: !!player.isFullscreen(),
+      webkitActive: webkitVideoFullscreenActive(current),
+    });
+    if (plan === 'delegate') return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (plan === 'webkit-exit') { exitWebkitVideoFullscreen(current); syncFullscreenState(); return }
+    if (plan === 'webkit-enter') { enterWebkitVideoFullscreen(current); syncFullscreenState(); return }
+    const container = (player.el().querySelector('media-container') ?? player.el()) as HTMLElement;
+    requestElementFullscreen(container).then(() => {
+      if (!elementFullscreenActive()) enterWebkitVideoFullscreen(current);
+      syncFullscreenState();
+    }).catch(() => { enterWebkitVideoFullscreen(current); syncFullscreenState() });
+  }, true);
   syncFullscreenState();
   const controls = [
     pip,
@@ -538,7 +572,8 @@ function mountPlayerChromeLayout(player: VjsPlayer): void {
   });
   /* 窄屏折叠照 YouTube 的判据来：base.js 9470c977 里播放器宽度 `v.width<528` 打开
      ytp-xsmall-width-mode，右侧收成「设置 + 展开」，点开才铺开其余按钮。判据必须是播放器
-     自己的宽度，不是视口——同一个视口下影院模式和普通视图的播放器宽度差一大截。 */
+     自己的宽度，不是视口——同一个视口下影院模式和普通视图的播放器宽度差一大截。
+     设备竖屏另有一条样式把全屏留在展开键外面，这里的宽度判据不变。 */
   const expand = document.createElement('div'); expand.className = 'vjs-peach-expand vjs-control';
   /* 高亮层要挂在 `.vjs-control` 这一层：亮起来的规则是 `>.vjs-peach-hover`，塞进
      button 里就差一层，展开键成了这排唯一没有 hover 的按钮。位置在这排左端——

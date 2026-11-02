@@ -360,6 +360,7 @@ video.video-js{vertical-align:top;font-size:10px;line-height:1;font-family:Arial
 }
 /* 窄屏梯度照搬 YouTube delhi-modern：base.js 9470c977 里 `v.width<528` 打开 ytp-xsmall-width-mode，
    右侧只留设置键和展开键，按钮从 48 收到 36、图标 24 收到 18；展开后铺开全部按钮。
+   设备竖屏另把全屏留在这排外面，见下面的 portrait 媒体查询。 */
    YouTube 展开时把时间显示改成 visibility:hidden 占着位，Peach 改成 display:none 让出宽度——
    它的控制条比 YouTube 窄，留着那段空位就又超框了。 */
 .vjs-peach-expand{display:none}
@@ -386,6 +387,11 @@ video.video-js{vertical-align:top;font-size:10px;line-height:1;font-family:Arial
 .video-js.vjs-peach-xsmall .vjs-peach-menu-option{min-height:44px}
 .video-js.vjs-peach-xsmall .vjs-peach-panel-menu:has(>.vjs-peach-menu-option:nth-child(5)){display:grid;grid-template-columns:1fr 1fr}
 .video-js.vjs-peach-xsmall .vjs-peach-right-controls>.vjs-control:not(.vjs-peach-settings):not(.vjs-peach-expand){display:none}
+/* 竖屏手机的播放器宽度总是小于 528，全屏会跟影院一起收进展开键。全屏单独留在外面。
+   桌面即使把播放器收成 xsmall，也不进这条。 */
+@media (max-width:760px) and (orientation:portrait){
+  .video-js.vjs-peach-xsmall .vjs-peach-right-controls>.vjs-fullscreen-control.vjs-control:not(.vjs-peach-expand){display:block}
+}
 .video-js.vjs-peach-xsmall .vjs-peach-expand{display:block}
 .video-js.vjs-peach-xsmall.vjs-peach-right-expanded .vjs-peach-right-controls>.vjs-control:not(.vjs-peach-settings):not(.vjs-peach-expand){display:block}
 .video-js.vjs-peach-xsmall.vjs-peach-right-expanded .vjs-peach-time{display:none}
