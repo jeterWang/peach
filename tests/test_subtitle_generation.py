@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -112,6 +113,17 @@ class CaptionTests(unittest.TestCase):
 
     def test_srt_timing_uses_a_comma(self):
         self.assertIn("00:00:01,500 --> 00:00:02,000", to_srt([(1.5, 2, "台词")]))
+
+
+class AsrDependencyTests(unittest.TestCase):
+    def test_pyav_stays_on_the_release_that_accepts_metadata_errors(self):
+        root = Path(__file__).resolve().parents[1]
+        project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        extra = project["project"]["optional-dependencies"]["asr"]
+        self.assertIn("av==18.1.0", extra)
+        lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+        pinned = [item["version"] for item in lock["package"] if item["name"] == "av"]
+        self.assertEqual(pinned, ["18.1.0"])
 
 
 class SettingsTests(unittest.TestCase):

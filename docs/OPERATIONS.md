@@ -614,6 +614,8 @@ DeepSeek 密钥只读环境变量 `DEEPSEEK_API_KEY`，不要写进 `config.toml
 uv sync --locked --extra asr --python 3.14
 ```
 
+这组依赖把 PyAV 钉在 18.1.0。faster-whisper 1.2.1 解码时会把 `metadata_errors` 传给 `av.open`；PyAV 19 不再接受这个参数，Windows 上会在打开音轨时失败。如果环境里已经装了 `av` 19，再执行一次上面的同步，把它换成 18.1.0。
+
 首次生成会下载 kotoba-whisper 权重（体积大约 1GB 量级，以 Hugging Face 上的文件为准），并按 DeepSeek 的用量计费。`peach serve` 起来之后，会把还没有中文外挂记录的视频排进后台队列，一部接一部处理；正在打开的那一部插到队首。队列在数据目录的 `state/subtitle-generation.json`。扫描新入库的视频也会追加。失败的一部不会在播放器轮询里自动重试；补上密钥或依赖后重新打开这部影片会再排一次「未设置 DEEPSEEK_API_KEY」，其他失败要重启服务后才会重新排队。
 
 安装版程序不会因为拉取这份源码而换成新代码。要用现有馆藏试这条功能：先退出正在跑的 Peach，让 `8900` 端口空出来，再用本仓库的虚拟环境指向原来的数据目录。Windows 安装版的程序在 `%LOCALAPPDATA%\Programs\Peach`，数据在 `%LOCALAPPDATA%\Peach\peach-data`。

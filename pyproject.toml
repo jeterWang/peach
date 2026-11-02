@@ -84,7 +84,9 @@ macos = ["pyobjc-framework-Cocoa==12.2.2; sys_platform == 'darwin'"]
 # 把字节喂给 `cv2.imdecode`，被 import 的外部模块必须有声明的归属。
 vision = ["opencv-python-headless==5.0.0.93", "numpy==2.5.4"]
 # 日语转写。中文翻译走 DeepSeek 的 HTTP 接口，不另引机器翻译包。
-asr = ["faster-whisper==1.2.1"]
+# faster-whisper 1.2.1 的 decode_audio 调用 av.open(..., metadata_errors="ignore")。
+# PyAV 19 删了这个参数，Windows 上会在打开音轨时 TypeError。钉在仍接受该参数的 18.1.0。
+asr = ["faster-whisper==1.2.1", "av==18.1.0"]
 maintenance-115 = ["p115client==0.0.9.7.2"]
 # 字形复核与英文媒体文件名分词工具。
 naming = [
