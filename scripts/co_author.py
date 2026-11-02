@@ -12,6 +12,7 @@ from .check_readme_impact import git, trailers, unpublished
 VENDORS = {
     "Claude Code": "noreply@anthropic.com",
     "Codex": "noreply@openai.com",
+    "Cursor": "noreply@cursor.com",
     "opencode": "noreply@opencode.ai",
 }
 

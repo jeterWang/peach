@@ -13,6 +13,9 @@ import { timelineFrame, type TimelineSheets } from './timeline';
 import { mountPlayerRotation } from './rotation';
 import { mountPlayerPipControl } from './pip';
 import { mountPlaybackRate, playerMemory } from './memory';
+import {
+  exitFullWindow, fullWindowActive, fullWindowOnThisDevice, fullWindowRotation, markIosDocument, planFullWindow, setFullWindow,
+} from './phone-fullscreen';
 
 type TooltipSync = (label?: string, aria?: string) => void;
 
@@ -401,6 +404,7 @@ function mountPlayerTheaterControl(player: VjsPlayer, settingsRoot: Element): vo
 }
 
 function mountPlayerChromeLayout(player: VjsPlayer): void {
+  markIosDocument();
   const controlBar = player.el().querySelector<HTMLElement>('.vjs-control-bar');
   if (!controlBar || controlBar.querySelector('.vjs-peach-right-controls')) return;
   const play = controlBar.querySelector<HTMLElement>(':scope>.vjs-play-control');
@@ -513,14 +517,50 @@ function mountPlayerChromeLayout(player: VjsPlayer): void {
   /* CSS 的 `.vjs-fullscreen` 只能覆盖 Video.js 已经同步状态类的路径。实际浏览器还可能
      走 full-window 回退，或者先触发 fullscreenchange、下一帧才完成 class 更新。把播放器
      自己的 `isFullscreen()` 结果登记到 DOM，画面填充不再依赖某一个实现细节类名。 */
+  const syncFullscreenFrame = () => {
+    const root = player.el();
+    const video = root.querySelector('video');
+    const turn = fullWindowRotation(
+      fullWindowActive(root), matchMedia('(orientation: portrait)').matches,
+      video?.videoWidth || 0, video?.videoHeight || 0,
+    );
+    if (turn) root.setAttribute('data-peach-rotate', turn);
+    else root.removeAttribute('data-peach-rotate');
+  };
   const syncFullscreenState = () => {
-    const active = !!player.isFullscreen();
+    const active = !!player.isFullscreen() || fullWindowActive(player.el());
     player.el().toggleAttribute('data-peach-fullscreen', active);
+    syncFullscreenFrame();
     fullscreenUse?.setAttribute('href', active ? '#i-player-fullscreen-exit' : '#i-player-fullscreen-enter');
     syncFullscreenTooltip(active ? '退出全屏' : '全屏');
     resizeSoon(player);
   };
   player.on(['fullscreenchange', 'enterFullWindow', 'exitFullWindow'], syncFullscreenState);
+  /* 窄触屏上的 iPhone / iPod 没有元素全屏。全屏按钮铺满视口，竖屏时整枚播放器转 90°，
+     控制条和字幕留在播放器里，方向与画面一致。桌面、Android 和宽屏直接返回。 */
+  fullscreen?.addEventListener('click', (event) => {
+    const root = player.el();
+    const plan = planFullWindow({ fullWindow: fullWindowOnThisDevice(), active: fullWindowActive(root) });
+    if (plan === 'delegate') return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    setFullWindow(root, plan === 'enter');
+    syncFullscreenState();
+  }, true);
+  const onEscape = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || !fullWindowActive(player.el())) return;
+    exitFullWindow(player.el());
+    syncFullscreenState();
+  };
+  document.addEventListener('keydown', onEscape);
+  const portraitQuery = matchMedia('(orientation: portrait)');
+  portraitQuery.addEventListener('change', syncFullscreenFrame);
+  player.on('dispose', () => {
+    document.removeEventListener('keydown', onEscape);
+    portraitQuery.removeEventListener('change', syncFullscreenFrame);
+    exitFullWindow(player.el());
+  });
+  player.el().querySelector('video')?.addEventListener('loadedmetadata', syncFullscreenFrame);
   syncFullscreenState();
   const controls = [
     pip,
@@ -538,7 +578,8 @@ function mountPlayerChromeLayout(player: VjsPlayer): void {
   });
   /* 窄屏折叠照 YouTube 的判据来：base.js 9470c977 里播放器宽度 `v.width<528` 打开
      ytp-xsmall-width-mode，右侧收成「设置 + 展开」，点开才铺开其余按钮。判据必须是播放器
-     自己的宽度，不是视口——同一个视口下影院模式和普通视图的播放器宽度差一大截。 */
+     自己的宽度，不是视口——同一个视口下影院模式和普通视图的播放器宽度差一大截。
+     iOS 竖屏另有一条样式把全屏留在展开键外面，宽度判据不变。 */
   const expand = document.createElement('div'); expand.className = 'vjs-peach-expand vjs-control';
   /* 高亮层要挂在 `.vjs-control` 这一层：亮起来的规则是 `>.vjs-peach-hover`，塞进
      button 里就差一层，展开键成了这排唯一没有 hover 的按钮。位置在这排左端——

@@ -77,11 +77,38 @@ export const createV10Player: VideojsFactory = (video, options) => {
     active();
   };
   const emit = (name: string) => events.dispatchEvent(new Event(name));
+  /* Safari 在缓冲已经够播、甚至进度还在走时也会派发 waiting / stalled，而且往往不再补一次 playing。
+   * 进度在走、readyState 已经能续播、或刚刚开始播放时撤掉转圈。真正停住且数据不够时，
+   * 先等一小段，避免一次空转把转圈留在画面正中。 */
+  const HAVE_FUTURE_DATA = 3;
+  const SPINNER_DELAY_MS = 400;
+  let seenTime = 0;
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearStall = () => { if (stallTimer) { clearTimeout(stallTimer); stallTimer = undefined } };
+  const hideWaiting = () => { clearStall(); root.classList.remove('vjs-waiting') };
+  const armStall = () => {
+    if (root.classList.contains('vjs-waiting') || stallTimer) return;
+    stallTimer = setTimeout(() => {
+      stallTimer = undefined;
+      if (video.paused || video.ended || video.seeking || video.readyState >= HAVE_FUTURE_DATA) return;
+      root.classList.add('vjs-waiting');
+    }, SPINNER_DELAY_MS);
+  };
+  const syncWaiting = (name: string) => {
+    if (video.paused || video.ended) { hideWaiting(); return }
+    const time = Number(video.currentTime) || 0;
+    const advanced = name === 'timeupdate' && time > seenTime + 0.04;
+    if (name === 'timeupdate') seenTime = time;
+    if (video.seeking || name === 'seeking') { clearStall(); root.classList.add('vjs-waiting'); return }
+    if (advanced || video.readyState >= HAVE_FUTURE_DATA || name === 'playing' || name === 'canplay' || name === 'seeked') {
+      hideWaiting(); return;
+    }
+    if (name === 'waiting' || name === 'stalled' || name === 'timeupdate') armStall();
+  };
   for (const name of ['play', 'pause', 'ended', 'loadedmetadata', 'durationchange', 'timeupdate', 'progress', 'loadstart', 'waiting', 'stalled', 'canplay', 'playing', 'seeking', 'seeked', 'ratechange', 'volumechange', 'resize', 'enterpictureinpicture', 'leavepictureinpicture']) {
     video.addEventListener(name, () => {
       if (['play', 'pause', 'ended', 'loadedmetadata'].includes(name)) update();
-      if (['waiting', 'stalled', 'seeking'].includes(name)) root.classList.add('vjs-waiting');
-      if (['canplay', 'playing', 'seeked', 'pause'].includes(name)) root.classList.remove('vjs-waiting');
+      syncWaiting(name);
       emit(name);
     }, { signal });
   }
@@ -142,7 +169,7 @@ export const createV10Player: VideojsFactory = (video, options) => {
     isDisposed: () => disposed,
     dispose: () => {
       if (disposed) return;
-      emit('dispose'); disposed = true; cleanup.abort(); if (idle) clearTimeout(idle);
+      emit('dispose'); disposed = true; cleanup.abort(); if (idle) clearTimeout(idle); clearStall();
       media.adapter.destroy(); video.pause(); video.removeAttribute('src'); video.load(); root.remove();
     },
     trigger: emit,
