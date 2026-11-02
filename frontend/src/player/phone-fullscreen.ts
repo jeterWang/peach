@@ -44,3 +44,107 @@ export function fullWindowRotation(active: boolean, portrait: boolean, videoWidt
   if (videoWidth > 0 && videoHeight > videoWidth) return '';
   return '90';
 }
+
+export interface SeekBox { left: number; top: number; width: number; height: number }
+
+/** 播放器顺时针转 90° 之后，进度条的布局仍是横条，屏幕上的长边却是竖直的。
+ *  Video.js 在按下时记下 `getBoundingClientRect()`，水平条用 `(clientX - left) / width`。
+ *  转完以后 width 是短边，手指沿长边移动几乎不改变这个比值，短边上的一点晃动就会从片头跳到片尾。
+ *  时间 0 在屏幕上方。把沿长边的比例写回 clientX，那条公式读到的就是手指在进度条上的位置。 */
+export function rotatedSeekClientPoint(point: { clientX: number; clientY: number }, box: SeekBox): { clientX: number; clientY: number } {
+  const span = box.height > 0 ? box.height : 1;
+  const along = Math.min(1, Math.max(0, (point.clientY - box.top) / span));
+  return { clientX: box.left + along * box.width, clientY: box.top + box.height / 2 };
+}
+
+/** 只有 iOS 竖屏页内全屏、而且进度条的包围盒已经竖过来时才改坐标。横条仍交给 Video.js。 */
+export function needsRotatedSeekMap(ios: boolean, rotate: string | null, box: SeekBox): boolean {
+  return ios && rotate === '90' && box.width > 0 && box.height > box.width;
+}
+
+interface ScrubSession { pointerId: number; slider: HTMLElement; box: SeekBox }
+
+/** 手指在竖直长边上的比例。用按下时的包围盒，和 Video.js 记下的那一次是同一块。 */
+export function rotatedSeekRatio(point: { clientX: number; clientY: number }, box: SeekBox): number {
+  const mapped = rotatedSeekClientPoint(point, box);
+  const width = box.width > 0 ? box.width : 1;
+  return Math.min(1, Math.max(0, (mapped.clientX - box.left) / width));
+}
+
+/** 拖动过程中直接推动进度条和播放位置。
+ *  转过 90° 之后，手指沿长边移动时事件目标经常落在画面上，到不了进度条。
+ *  只改写按下和松开的话，手柄会停在起点，松手才跳到终点。这里按指针编号跟上每一次移动。 */
+export function attachRotatedSeek(root: HTMLElement): () => void {
+  let session: ScrubSession | null = null;
+  let ratioNow = 0;
+  let frame = 0;
+  const media = () => root.querySelector('video');
+  const paint = (ratio: number) => {
+    if (!session) return;
+    const percent = `${(ratio * 100).toFixed(3)}%`;
+    session.slider.style.setProperty('--media-slider-fill', percent);
+    session.slider.style.setProperty('--media-slider-pointer', percent);
+  };
+  const follow = () => {
+    if (!session) { frame = 0; return }
+    paint(ratioNow);
+    frame = requestAnimationFrame(follow);
+  };
+  const scrub = (ratio: number) => {
+    if (!session) return;
+    ratioNow = ratio;
+    paint(ratio);
+    const video = media();
+    if (video) {
+      const duration = video.duration;
+      if (Number.isFinite(duration) && duration > 0) {
+        const next = Math.min(duration, Math.max(0, ratio * duration));
+        if (video.currentTime !== next) video.currentTime = next;
+        video.dispatchEvent(new Event('timeupdate'));
+      }
+    }
+    paint(ratio);
+    if (!frame) frame = requestAnimationFrame(follow);
+  };
+  const onPointer = (event: Event) => {
+    if (!(event instanceof PointerEvent)) return;
+    if (!document.documentElement.hasAttribute('data-peach-ios') || root.getAttribute('data-peach-rotate') !== '90') return;
+    if (event.type === 'pointerdown') {
+      const target = event.target;
+      if (!(target instanceof Element) || !root.contains(target)) return;
+      const slider = target.closest('media-time-slider');
+      if (!(slider instanceof HTMLElement)) return;
+      const box = slider.getBoundingClientRect();
+      if (!needsRotatedSeekMap(true, '90', box)) return;
+      session = { pointerId: event.pointerId, slider, box };
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      scrub(rotatedSeekRatio(event, box));
+      return;
+    }
+    if (!session || event.pointerId !== session.pointerId) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    scrub(rotatedSeekRatio(event, session.box));
+    if (event.type === 'pointerup' || event.type === 'pointercancel') {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      session = null;
+    }
+  };
+  const onTouchStart = (event: Event) => {
+    if (!document.documentElement.hasAttribute('data-peach-ios') || root.getAttribute('data-peach-rotate') !== '90') return;
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest('media-time-slider') || !root.contains(target)) return;
+    if (event.cancelable) event.preventDefault();
+  };
+  for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) document.addEventListener(type, onPointer, true);
+  document.addEventListener('touchstart', onTouchStart, { capture: true, passive: false });
+  return () => {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+    session = null;
+    for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) document.removeEventListener(type, onPointer, true);
+    document.removeEventListener('touchstart', onTouchStart, true);
+  };
+}

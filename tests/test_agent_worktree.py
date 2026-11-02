@@ -963,6 +963,8 @@ class CoAuthorTests(unittest.TestCase):
             self.signed("Co-Authored-By: Codex (GPT-5.5) <noreply@openai.com>"), [])
         self.assertEqual(
             self.signed("Co-Authored-By: opencode (GLM 5.3 Flash) <noreply@opencode.ai>"), [])
+        self.assertEqual(
+            self.signed("Co-Authored-By: Cursor (Grok 4.7) <noreply@cursor.com>"), [])
 
     def test_an_address_that_does_not_belong_to_the_tool_is_rejected(self):
         self.assertTrue(self.signed("Co-Authored-By: Codex (GPT-5.5) <noreply@anthropic.com>"))

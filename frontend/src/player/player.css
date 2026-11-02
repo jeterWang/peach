@@ -13,11 +13,13 @@
  * 那条，当前 Chromium 不认，模糊整条丢掉。 */
 
 /* Video.js 10 控件使用 light DOM，几何归 Peach 皮肤。 */
-.video-js{display:block;position:relative;box-sizing:border-box;color:#fff;background:#000;font-size:10px;line-height:1;font-family:inherit}
+.video-js{display:block;position:relative;box-sizing:border-box;color:#fff;background:#000;font-size:10px;line-height:1;font-family:inherit;
+  -webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .video-js>video-player{display:contents}
 .video-js>video-player>media-container{display:block;width:100%;height:100%;position:absolute;inset:0}
 .video-js :is(hlsjs-video,dash-video){display:contents}
-.video-js .vjs-tech{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+.video-js .vjs-tech{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;
+  -webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .video-js .vjs-control-bar{display:flex;position:absolute;bottom:0;left:0;width:100%;height:3em;z-index:2}
 .video-js .vjs-picture-in-picture-control[data-peach-pip-supported][hidden]{display:block!important}
 .video-js .vjs-picture-in-picture-control[aria-disabled="true"]{color:rgba(255,255,255,.45);cursor:not-allowed}
@@ -322,6 +324,12 @@ video.video-js{vertical-align:top;font-size:10px;line-height:1;font-family:Arial
   display:grid;place-items:center;border-radius:50%;background:rgba(0,0,0,.6);
   backdrop-filter:blur(16px);color:#fff;opacity:0;pointer-events:none}
 .vjs-peach-bezel[hidden]{display:none}
+/* 按住画面右半边时停在画面上方的倍速提示。跟播放器一起转，不接指针。 */
+.vjs-peach-hold-speed{position:absolute;z-index:20;left:50%;top:14%;transform:translateX(-50%);
+  display:none;align-items:center;padding:6px 12px;border-radius:var(--pill-radius);
+  background:rgba(0,0,0,.6);color:#fff;font-size:var(--fs-md);font-weight:600;line-height:1;
+  pointer-events:none;text-shadow:0 0 2px #000}
+.vjs-peach-hold-speed:not([hidden]){display:flex}
 .vjs-peach-bezel-icon{display:grid;place-items:center;width:54px;height:54px}
 .vjs-peach-bezel-icon svg{width:100%;height:100%;display:block;fill:currentColor;stroke:none}
 .vjs-peach-bezel-run{animation:peach-bezel-fadeout 1s cubic-bezier(.05,0,0,1) 1 normal forwards}
