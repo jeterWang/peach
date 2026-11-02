@@ -51,7 +51,10 @@ export function attachHoldSpeed(player: VjsPlayer): () => void {
   let previous = 1;
   let armed = false;
   let boosted = false;
+  let moved = false;
   let swallowClick = false;
+  let lastTap = 0;
+  let tapTimer: ReturnType<typeof setTimeout> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const rotated = () => document.documentElement.hasAttribute('data-peach-ios') && root.getAttribute('data-peach-rotate') === '90';
   const hide = () => { shown.hidden = true };
@@ -74,6 +77,7 @@ export function attachHoldSpeed(player: VjsPlayer): () => void {
     originY = event.clientY;
     previous = Number(player.playbackRate()) || 1;
     armed = true;
+    moved = false;
     swallowClick = false;
     clearTimer();
     timer = setTimeout(() => {
@@ -88,6 +92,7 @@ export function attachHoldSpeed(player: VjsPlayer): () => void {
   const onMove = (event: PointerEvent) => {
     if (!armed || event.pointerId !== pointerId || boosted) return;
     if (Math.hypot(event.clientX - originX, event.clientY - originY) <= HOLD_MOVE_PX) return;
+    moved = true;
     clearTimer();
     armed = false;
     pointerId = -1;
@@ -105,7 +110,34 @@ export function attachHoldSpeed(player: VjsPlayer): () => void {
     event.stopImmediatePropagation();
   };
   const onContext = (event: Event) => { if (armed || boosted) event.preventDefault() };
+  /* iOS 长按画面会弹出文字放大镜。touchstart 里取消默认动作才能压住它，
+     只作用在画面上，进度条和按钮不进这里。单击和双击改由 touchend 补上。 */
+  const onTouchStart = (event: TouchEvent) => {
+    if (!document.documentElement.hasAttribute('data-peach-ios')) return;
+    if (event.touches && event.touches.length !== 1) return;
+    if (event.cancelable) event.preventDefault();
+  };
+  const onTouchEnd = () => {
+    if (!document.documentElement.hasAttribute('data-peach-ios')) return;
+    if (swallowClick || boosted || moved) { moved = false; return }
+    const now = performance.now();
+    if (tapTimer && now - lastTap < 280) {
+      clearTimeout(tapTimer);
+      tapTimer = undefined;
+      lastTap = 0;
+      root.querySelector<HTMLElement>('media-fullscreen-button')?.click();
+      return;
+    }
+    lastTap = now;
+    tapTimer = setTimeout(() => {
+      tapTimer = undefined;
+      if (swallowClick || boosted) return;
+      video.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    }, 280);
+  };
   video.addEventListener('pointerdown', onDown);
+  video.addEventListener('touchstart', onTouchStart, { passive: false });
+  video.addEventListener('touchend', onTouchEnd);
   document.addEventListener('pointermove', onMove);
   document.addEventListener('pointerup', onUp);
   document.addEventListener('pointercancel', onUp);
@@ -116,7 +148,10 @@ export function attachHoldSpeed(player: VjsPlayer): () => void {
   return () => {
     restore();
     swallowClick = false;
+    if (tapTimer) clearTimeout(tapTimer);
     video.removeEventListener('pointerdown', onDown);
+    video.removeEventListener('touchstart', onTouchStart);
+    video.removeEventListener('touchend', onTouchEnd);
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onUp);
     document.removeEventListener('pointercancel', onUp);

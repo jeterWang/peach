@@ -94,6 +94,24 @@ describe('按住与松手', () => {
     view.release();
   });
 
+  it('iOS 上按住画面会取消触摸默认动作，进度条上的触摸不会', () => {
+    document.documentElement.setAttribute('data-peach-ios', '');
+    const view = mounted();
+    const start = new Event('touchstart', { bubbles: true, cancelable: true });
+    view.video.dispatchEvent(start);
+    expect(start.defaultPrevented).toBe(true);
+    const bar = document.createElement('media-time-slider');
+    document.body.append(bar);
+    const onBar = new Event('touchstart', { bubbles: true, cancelable: true });
+    bar.dispatchEvent(onBar);
+    expect(onBar.defaultPrevented).toBe(false);
+    document.documentElement.removeAttribute('data-peach-ios');
+    const plain = new Event('touchstart', { bubbles: true, cancelable: true });
+    view.video.dispatchEvent(plain);
+    expect(plain.defaultPrevented).toBe(false);
+    view.release();
+  });
+
   it('鼠标按下不改变倍速', () => {
     vi.useFakeTimers();
     const view = mounted();
