@@ -15,9 +15,9 @@ beforeAll(() => {
 });
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals() });
 
-function mounted() {
+function mounted(controls = false) {
   const video = document.createElement('video'); document.body.append(video);
-  const player = createV10Player(video, { controls: false });
+  const player = createV10Player(video, { controls });
   const media = player.el().querySelector('hlsjs-video') as TestMedia;
   return { video, player, media };
 }
@@ -115,3 +115,61 @@ describe('Video.js 10 播放会话', () => {
 });
 
 function videoMetadata(root: HTMLElement) { root.querySelector('video')!.dispatchEvent(new Event('loadedmetadata')) }
+
+function playback(video: HTMLVideoElement, initial: { paused: boolean; readyState: number; currentTime: number; seeking?: boolean; ended?: boolean }) {
+  const state = { seeking: false, ended: false, ...initial };
+  for (const key of ['paused', 'readyState', 'currentTime', 'seeking', 'ended'] as const) {
+    Object.defineProperty(video, key, { configurable: true, get: () => state[key] });
+  }
+  return { set: (next: Partial<typeof state>) => Object.assign(state, next) };
+}
+
+describe('播放中的中央转圈', () => {
+  it('缓冲已经够播时，waiting 和 stalled 不把转圈留在画面正中', () => {
+    vi.useFakeTimers();
+    try {
+      const { video, player } = mounted(true);
+      playback(video, { paused: false, readyState: 4, currentTime: 2 });
+      video.dispatchEvent(new Event('playing'));
+      video.dispatchEvent(new Event('stalled'));
+      video.dispatchEvent(new Event('waiting'));
+      vi.advanceTimersByTime(1000);
+      expect(player.el().classList.contains('vjs-waiting')).toBe(false);
+      player.dispose();
+    } finally { vi.useRealTimers() }
+  });
+
+  it('进度还在走时撤掉转圈；停住且数据不够才显示', () => {
+    vi.useFakeTimers();
+    try {
+      const { video, player } = mounted(true);
+      const media = playback(video, { paused: false, readyState: 1, currentTime: 1 });
+      video.dispatchEvent(new Event('timeupdate'));
+      video.dispatchEvent(new Event('waiting'));
+      vi.advanceTimersByTime(200);
+      expect(player.el().classList.contains('vjs-waiting')).toBe(false);
+      media.set({ currentTime: 1.4 });
+      video.dispatchEvent(new Event('timeupdate'));
+      vi.advanceTimersByTime(500);
+      expect(player.el().classList.contains('vjs-waiting')).toBe(false);
+      video.dispatchEvent(new Event('waiting'));
+      vi.advanceTimersByTime(500);
+      expect(player.el().classList.contains('vjs-waiting')).toBe(true);
+      media.set({ readyState: 4, currentTime: 2 });
+      video.dispatchEvent(new Event('timeupdate'));
+      expect(player.el().classList.contains('vjs-waiting')).toBe(false);
+      player.dispose();
+    } finally { vi.useRealTimers() }
+  });
+
+  it('拖动进度立刻显示转圈，seeked 后撤掉', () => {
+    const { video, player } = mounted(true);
+    const media = playback(video, { paused: false, readyState: 4, currentTime: 3, seeking: true });
+    video.dispatchEvent(new Event('seeking'));
+    expect(player.el().classList.contains('vjs-waiting')).toBe(true);
+    media.set({ seeking: false, currentTime: 8 });
+    video.dispatchEvent(new Event('seeked'));
+    expect(player.el().classList.contains('vjs-waiting')).toBe(false);
+    player.dispose();
+  });
+});

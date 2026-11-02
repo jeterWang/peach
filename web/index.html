@@ -15,6 +15,8 @@
 <link rel="stylesheet" href="/dist/peach-app.css">
 <link rel="stylesheet" href="/app.css">
 <link rel="stylesheet" href="/board.css">
+<!-- iPhone、iPod、iPad 在第一次绘制前标上 data-peach-ios。竖屏铺满和页内全屏旋转只认这枚属性。 -->
+<script>document.documentElement.toggleAttribute('data-peach-ios',/iPhone|iPod|iPad/.test(navigator.userAgent));</script>
 <!-- 主题必须在第一次绘制之前定下来。主入口是 module，等同 defer：轮到它跑的时候
      浏览器已经按系统色画过一帧，手动选了浅色的人每次进页面都要先看一下深色。
      这段只做三件事——按实际深浅给 <html> 加减 `dark` 类、把选择写到 data-theme、
