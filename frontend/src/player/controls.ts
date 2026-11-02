@@ -14,7 +14,7 @@ import { mountPlayerRotation } from './rotation';
 import { mountPlayerPipControl } from './pip';
 import { mountPlaybackRate, playerMemory } from './memory';
 import {
-  exitFullWindow, fullWindowActive, fullWindowOnThisDevice, fullWindowRotation, planFullWindow, setFullWindow,
+  attachRotatedSeek, exitFullWindow, fullWindowActive, fullWindowOnThisDevice, fullWindowRotation, planFullWindow, setFullWindow,
 } from './phone-fullscreen';
 
 type TooltipSync = (label?: string, aria?: string) => void;
@@ -552,11 +552,13 @@ function mountPlayerChromeLayout(player: VjsPlayer): void {
     syncFullscreenState();
   };
   document.addEventListener('keydown', onEscape);
+  const releaseSeek = attachRotatedSeek(player.el());
   const portraitQuery = matchMedia('(orientation: portrait)');
   portraitQuery.addEventListener('change', syncFullscreenFrame);
   player.on('dispose', () => {
     document.removeEventListener('keydown', onEscape);
     portraitQuery.removeEventListener('change', syncFullscreenFrame);
+    releaseSeek();
     exitFullWindow(player.el());
   });
   player.el().querySelector('video')?.addEventListener('loadedmetadata', syncFullscreenFrame);
