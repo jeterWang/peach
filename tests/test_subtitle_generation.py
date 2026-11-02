@@ -95,6 +95,19 @@ class CaptionTests(unittest.TestCase):
         self.assertEqual(seen["json"]["thinking"], {"type": "disabled"})
         self.assertIn("称呼", seen["json"]["messages"][0]["content"])
 
+    def test_translation_prompt_repairs_asr_garbage_from_context(self):
+        system = gen.style_prompt(SubtitleSettings(), ())
+        self.assertIn("按前后文推断原意", system)
+        self.assertIn("不要照译错词", system)
+        self.assertIn("切り好き", system)
+        self.assertIn("不要另编情节", system)
+        self.assertIn("空白行保持空白", system)
+        self.assertIn("按前后文推断原意", gen.TRANSLATE_INTRO)
+        self.assertIn("空白行保持空白", gen.TRANSLATE_INTRO)
+        polish = gen.polish_prompt(SubtitleSettings())
+        self.assertNotIn("推断原意", polish)
+        self.assertNotIn("译成", polish)
+
     def test_missing_key_is_reported_without_calling_the_network(self):
         previous = os.environ.pop(gen.API_KEY_ENV, None)
         try:

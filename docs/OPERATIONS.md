@@ -605,7 +605,7 @@ deepseek_url = "https://api.deepseek.com/chat/completions"
 polish_transcript = true
 ```
 
-`device` 只能是 `cpu` 或 `cuda`。`deepseek_model` 默认是 `deepseek-flash`，也可以写成 `deepseek-v4-pro` 或其他模型名。`polish_transcript` 默认开启：先整片校对日语，再整片翻译。校对和翻译都是一次请求，输出上限都是 262144 token。对白估测超过约 90 万 token（输入加上输出上限）时，改为 600 行一块，单块仍放不下则用 400 行；校对块带上已改过的短称呼，翻译块带上已译称呼。`glossary` 可指向一份 UTF-8 术语表，每行 `日文<制表符>中文`，`#` 开头是注释；同名日文覆盖内置称呼，只在翻译时替换。`system_prompt` 留空时用内置提示：口语、同一部片子里的称呼和关系保持一致、不改写成书面语、不添加原文没有的情节。环境变量 `PEACH_SUBTITLES_ENABLED`、`PEACH_SUBTITLES_MODEL`、`PEACH_SUBTITLES_DEVICE`、`PEACH_SUBTITLES_DEEPSEEK_MODEL`、`PEACH_SUBTITLES_URL`、`PEACH_SUBTITLES_POLISH` 覆盖文件里的对应项。
+`device` 只能是 `cpu` 或 `cuda`。`deepseek_model` 默认是 `deepseek-flash`，也可以写成 `deepseek-v4-pro` 或其他模型名。`polish_transcript` 默认开启：先整片校对日语，再整片翻译。校对和翻译都是一次请求，输出上限都是 262144 token。对白估测超过约 90 万 token（输入加上输出上限）时，改为 600 行一块，单块仍放不下则用 400 行；校对块带上已改过的短称呼，翻译块带上已译称呼。`glossary` 可指向一份 UTF-8 术语表，每行 `日文<制表符>中文`，`#` 开头是注释；同名日文覆盖内置称呼，只在翻译时替换。`system_prompt` 留空时用内置提示：口语、同一部片子里的称呼和关系保持一致、不改写成书面语。识别垃圾、碎句或不通的胡话按前后文推断原意，写成自然的成人片口语，不照译错词，也不编上下文里没有的情节；空白行保持空白。环境变量 `PEACH_SUBTITLES_ENABLED`、`PEACH_SUBTITLES_MODEL`、`PEACH_SUBTITLES_DEVICE`、`PEACH_SUBTITLES_DEEPSEEK_MODEL`、`PEACH_SUBTITLES_URL`、`PEACH_SUBTITLES_POLISH` 覆盖文件里的对应项。
 
 DeepSeek 密钥只读环境变量 `DEEPSEEK_API_KEY`，不要写进 `config.toml`、账本或日志。改完用户环境变量后要重新打开终端，再启动 Peach，进程才看得到。
 
