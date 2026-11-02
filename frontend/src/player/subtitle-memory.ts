@@ -4,6 +4,19 @@ import { playerMemory } from './memory';
 
 interface SavedTrack { key: string; name: string; text: string }
 
+/** 简体优先，其次未分简繁的中文，再次繁体。 */
+export function preferredChineseTrack(tracks: TextTrack[]): TextTrack | null {
+  const rank = (track: TextTrack) => {
+    const language = (track.language || '').toLowerCase();
+    const label = track.label || '';
+    if (language === 'zh-hans' || language === 'zh-cn' || label.includes('简体')) return 3;
+    if (language === 'zh' || language === 'chi' || language === 'zho' || label.includes('中文')) return 2;
+    if (language.startsWith('zh') || label.includes('繁')) return 1;
+    return 0;
+  };
+  return tracks.filter(track => rank(track) > 0).sort((left, right) => rank(right) - rank(left))[0] ?? null;
+}
+
 export class SubtitleSession {
   private cleanup = new AbortController();
   private imported = new Map<string, { node: HTMLTrackElement; url: string }>();
@@ -31,11 +44,22 @@ export class SubtitleSession {
   }
   selectImported(key: string) { this.select(this.imported.get(key)!.node.track) }
   select(track: TextTrack | null) {
+    this.preferChinese = false;
     this.selected = track ? this.key(track) : null;
     this.apply(); this.changed();
     void this.save({ selected: this.selected }).catch(error => this.failed(error));
   }
+  private preferChinese = false;
   private apply() {
+    if (this.preferChinese && this.selected === undefined) {
+      const pick = preferredChineseTrack(this.tracks());
+      if (!pick) return;
+      this.tracks().forEach(track => {
+        const mode = track === pick ? 'showing' : 'disabled';
+        if (track.mode !== mode) track.mode = mode;
+      });
+      return;
+    }
     if (this.selected === undefined) return;
     const aliases = [...this.video.querySelectorAll<HTMLTrackElement>('track[data-subtitle-alias]')];
     const selected = this.tracks().find(track => this.key(track) === this.selected
@@ -51,7 +75,7 @@ export class SubtitleSession {
     this.changed();
   }
   private save(value: { selected: string | null; track?: SavedTrack }) {
-    return this.memory.save(value).then(() => {
+    return this.memory.save({ ...value, subtitle_chosen: true }).then(() => {
       const hadError = !!this.error;
       this.error = ''; if (hadError && !this.cleanup.signal.aborted) this.changed();
     });
@@ -61,7 +85,11 @@ export class SubtitleSession {
     try {
       const saved = await this.memory.load();
       if (signal.aborted) return;
-      if (this.selected === undefined) this.selected = saved.selected;
+      if (this.selected === undefined) {
+        const chosen = saved.subtitle_chosen ?? !!saved.selected;
+        if (chosen) this.selected = saved.selected;
+        else this.preferChinese = true;
+      }
       this.apply();
       let failure: unknown;
       for (const track of saved.tracks) {
