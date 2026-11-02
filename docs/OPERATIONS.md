@@ -589,9 +589,9 @@ Peach 配置「媒体库与入库 → 视频预览」中的「抽帧解码方式
 
 播放器打开影片时，会自动显示已经能播的中文轨：外挂文件名里的 `zh`、`chs`、`chi`、`zh-CN` 等 Peach 认得的标记，以及浏览器自己报出来的中文文本轨。手动选过轨道或关掉字幕之后，记住的是这次选择。
 
-还没有中文轨时，可以在后台生成。服务用 faster-whisper 按日语转写（默认模型是 [kotoba-tech/kotoba-whisper-v2.0-faster](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0-faster)，`language=ja`）。默认识别结果先整片交给 DeepSeek 校对日语：改正同音误识别、口癖碎句和明显幻听，背景音乐或没有对白的乱码留空；时间轴和条数保持不变。校对后的日语再整片译成口语简体中文。ReazonSpeech 不走这条链路，它不是 faster-whisper 能加载的权重。已经有中文外挂，或 ffprobe 能看到语言/标题标成中文的内嵌字幕轨，这一部不会再转写、也不会再调用 DeepSeek。图形内嵌轨（PGS、VobSub）只要标了中文也跳过；浏览器播不了的图形轨不会因此再生成一份文本字幕。
+还没有中文轨时，可以在后台生成。正片旁边如果已经有可用的日语外挂，就直接用它的时间轴和对白，不再转写。可用指：不是中文（`.chs.srt`、`.zh.srt`，以及文件名或语言标成中文的，都不算），并且是与正片同名的 `.srt` 或 `.vtt`，或文件名标成日语，或正文里假名不少于 12 个。同名 `.srt` 优先于标成 `.ja.srt` 的文件。解析失败或没有对白时，仍改走识别。识别用 faster-whisper 按日语转写（默认模型是 [kotoba-tech/kotoba-whisper-v2.0-faster](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0-faster)，`language=ja`，并打开 VAD）。无语音概率达到 0.5、压缩比达到 2.2，或平均对数概率低于 -0.8 的段会丢掉，避免片头曲和听不清的乱码进入译文。默认识别或外挂文本先整片交给 DeepSeek 校对日语：改正同音误识别（例如「チーム」改回「タマ」，「パン」改回「ちんこ」）、口癖碎句和明显幻听；片头曲、背景音乐或没有对白的行留空。校对后的空行在翻译前丢掉，时间轴只保留还有对白的条。校对后的日语再整片译成口语简体中文。ReazonSpeech 不走这条链路，它不是 faster-whisper 能加载的权重。已经有中文外挂，或 ffprobe 能看到语言/标题标成中文的内嵌字幕轨，这一部不会再转写、也不会再调用 DeepSeek。图形内嵌轨（PGS、VobSub）只要标了中文也跳过；浏览器播不了的图形轨不会因此再生成一份文本字幕。
 
-生成结果是正片旁边的 `影片名.chs.srt`。播放列表把它当成普通外挂字幕，转成 WebVTT 后自动打开。正片目录不可写时，文件改放在数据目录的 `generated/subtitles/tracks/`，接口仍会把它挂上。
+生成结果是正片旁边的 `影片名.chs.srt`，校对后的日语同时写成 `影片名.ja.srt`。`影片名.chs.srt.peach.json` 记录指纹，并用 `source` 标明这次日语来自 `sidecar` 还是 `asr`。播放列表把中文轨当成普通外挂字幕，转成 WebVTT 后自动打开。正片目录不可写时，两份字幕改放在数据目录的 `generated/subtitles/tracks/`（`作品编号.chs.srt` 与 `作品编号.ja.srt`），中文轨仍会挂上。要重做一部已经生成过的影片，删掉它旁边的 `影片名.chs.srt` 和 `影片名.chs.srt.peach.json`（目录不可写时改删数据目录里对应的两份）。旁边若还留着同名 `.srt` 或 `.ja.srt`，下一次会继续用这份外挂、不再识别；要强制重新听音轨，把这些日语外挂也移走。
 
 在 `<Peach 数据目录>/config.toml` 里打开：
 
@@ -617,7 +617,7 @@ uv sync --locked --extra asr --python 3.14
 
 这组依赖把 PyAV 钉在 18.1.0。faster-whisper 1.2.1 解码时会把 `metadata_errors` 传给 `av.open`；PyAV 19 不再接受这个参数，Windows 上会在打开音轨时失败。如果环境里已经装了 `av` 19，再执行一次上面的同步，把它换成 18.1.0。
 
-首次生成会下载 kotoba-whisper 权重（体积大约 1GB 量级，以 Hugging Face 上的文件为准），并按 DeepSeek 的用量计费。`peach serve` 起来之后，会把还没有中文外挂记录的视频排进后台队列，一部接一部处理；正在打开的那一部插到队首。队列在数据目录的 `state/subtitle-generation.json`。扫描新入库的视频也会追加。失败的一部不会在播放器轮询里自动重试；补上密钥或依赖后重新打开这部影片会再排一次「未设置 DEEPSEEK_API_KEY」，其他失败要重启服务后才会重新排队。
+首次生成会下载 kotoba-whisper 权重（体积大约 1GB 量级，以 Hugging Face 上的文件为准），并按 DeepSeek 的用量计费。`peach serve` 起来之后，会把还没有中文外挂记录的视频排进后台队列，一部接一部处理；正在打开的那一部插到队首。队列在数据目录的 `state/subtitle-generation.json`。扫描新入库的视频也会追加。失败的一部不会在播放器轮询里自动重试；补上密钥或依赖后重新打开这部影片会再排一次「未设置 DEEPSEEK_API_KEY」。其他失败留在队列文件里，用 `POST /api/subtitles/generation/retry` 放回队首，或用 `POST /api/subtitles/generation/ignore` 移出队列。开关是 `POST /api/subtitles/generation` 的 `enabled`。
 
 安装版程序不会因为拉取这份源码而换成新代码。要用现有馆藏试这条功能：先退出正在跑的 Peach，让 `8900` 端口空出来，再用本仓库的虚拟环境指向原来的数据目录。Windows 安装版的程序在 `%LOCALAPPDATA%\Programs\Peach`，数据在 `%LOCALAPPDATA%\Peach\peach-data`。
 

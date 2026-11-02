@@ -13,9 +13,9 @@ from types import SimpleNamespace
 from peach import settings_file, subtitle_generation as gen
 from peach.settings_file import SettingsFileError, SubtitleSettings
 from peach.subtitle_generation import (
-    SubtitleService, load_glossary, parse_numbered, protect, restore,
-    polish_with_deepseek, row_is_chinese, subtitle_tag_is_chinese, to_srt,
-    translate_with_deepseek, videos_without_chinese,
+    SubtitleService, cues_from_model, japanese_source_cues, load_glossary,
+    parse_numbered, protect, restore, polish_with_deepseek, row_is_chinese,
+    subtitle_tag_is_chinese, to_srt, translate_with_deepseek, videos_without_chinese,
 )
 from support.ledger import fresh_ledger
 
@@ -346,6 +346,9 @@ class CaptionTests(unittest.TestCase):
         system = calls[0]["messages"][0]["content"]
         self.assertIn("不要翻译", system)
         self.assertIn("幻听", system)
+        self.assertIn("チーム", system)
+        self.assertIn("ちんこ", system)
+        self.assertIn("留空", system)
         self.assertNotIn("译成", system)
         self.assertEqual(calls[0]["model"], "deepseek-flash")
         self.assertEqual(calls[0]["thinking"], {"type": "disabled"})
@@ -499,7 +502,7 @@ class GenerationTests(unittest.TestCase):
         )
         service._run_one(7)
         self.assertEqual(seen["polish"], ["せんぱい", "♪音楽♪"])
-        self.assertEqual(seen["translate"], ["校正後の先輩", ""])
+        self.assertEqual(seen["translate"], ["校正後の先輩"])
         self.assertNotIn("せんぱい", seen["translate"])
         path, _marker = gen.sidecar_paths(self.video)
         text = path.read_text(encoding="utf-8")
@@ -512,7 +515,12 @@ class GenerationTests(unittest.TestCase):
         path, marker = gen.sidecar_paths(self.video)
         self.assertIn("中文对白", path.read_text(encoding="utf-8"))
         self.assertEqual(self.translated, ["先輩"])
-        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["translator"], "deepseek")
+        marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(marker_payload["translator"], "deepseek")
+        self.assertEqual(marker_payload["source"], "asr")
+        ja = gen.ja_sidecar_path(self.video)
+        self.assertEqual(ja.name, "ABP-758.ja.srt")
+        self.assertIn("先輩", ja.read_text(encoding="utf-8"))
         self.service._run_one(7)
         self.assertEqual(self.calls, 1)
 
@@ -538,8 +546,14 @@ class GenerationTests(unittest.TestCase):
         self.service._run_one(7)
         stored = self.service._stored_srt(7)
         self.assertIn("中文对白", stored.read_text(encoding="utf-8"))
+        stored_ja = self.service._stored_ja_srt(7)
+        self.assertEqual(stored_ja.name, "7.ja.srt")
+        self.assertEqual(stored_ja.parent, stored.parent)
+        self.assertIn("先輩", stored_ja.read_text(encoding="utf-8"))
         rows = self.service.extra_rows(7, self.video.name, [])
         self.assertEqual(rows[0]["language"], "zh-Hans")
+        self.assertEqual(rows[1]["language"], "ja")
+        self.assertEqual(rows[1]["name"], "ABP-758.ja.srt")
         self.assertTrue(self.service.stored_root_has(stored))
 
     def test_catalog_query_skips_videos_that_already_have_chinese_rows(self):
@@ -555,6 +569,137 @@ class GenerationTests(unittest.TestCase):
                 "INSERT INTO asset_subtitle(asset_id,location,path,name,language,format,pairing,first_seen,last_seen) "
                 "VALUES(2,'local','R:/b.chs.srt','b.chs.srt','zh-Hans','srt','suffix','2026-01-01','2026-01-01')")
         self.assertEqual(videos_without_chinese(database), [1])
+
+    def test_a_plain_japanese_sidecar_skips_asr(self):
+        self.video.with_name("ABP-758.ja.srt").write_text(
+            "1\n00:00:03,000 --> 00:00:04,000\n別の稿\n", encoding="utf-8")
+        self.video.with_name("ABP-758.srt").write_text(
+            "1\n00:00:01,000 --> 00:00:02,500\n先輩、こっち\n", encoding="utf-8")
+        def refuse(*_args):
+            raise AssertionError("不应识别")
+
+        self.service._transcriber = refuse
+        self.service._extractor = refuse
+        self.service._run_one(7)
+        self.assertEqual(self.translated, ["先輩、こっち"])
+        _path, marker = gen.sidecar_paths(self.video)
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["source"], "sidecar")
+        ja = gen.ja_sidecar_path(self.video)
+        self.assertEqual(ja.name, "ABP-758.ja.srt")
+        self.assertIn("先輩、こっち", ja.read_text(encoding="utf-8"))
+        self.assertIn("00:00:01,000 --> 00:00:02,500", _path.read_text(encoding="utf-8"))
+
+    def test_blank_lines_after_polish_are_dropped_before_translation(self):
+        seen = {}
+
+        def polish(_lines, _settings):
+            return ["", "たま"]
+
+        def translate(lines, _settings):
+            seen["translate"] = list(lines)
+            return ["蛋" for _line in lines]
+
+        service = SubtitleService(
+            root=self.root / "dropped", database_path=self.root / "ledger.db",
+            media=self.service.media,
+            settings=SubtitleSettings(enabled=True, polish_transcript=True),
+            translator=translate, polisher=polish,
+            transcriber=lambda _wav, _settings: [(0.0, 1.0, "チーム"), (1.2, 2.4, "たま")],
+            extractor=lambda _source, dest: (dest.parent.mkdir(parents=True, exist_ok=True), dest.write_bytes(b"RIFF")),
+            embedded=lambda _path: False,
+        )
+        service._run_one(7)
+        self.assertEqual(seen["translate"], ["たま"])
+        text = gen.sidecar_paths(self.video)[0].read_text(encoding="utf-8")
+        self.assertEqual(text.count("-->"), 1)
+        self.assertIn("00:00:01,200 --> 00:00:02,400", text)
+        self.assertNotIn("00:00:00,000", text)
+        self.assertIn("たま", gen.ja_sidecar_path(self.video).read_text(encoding="utf-8"))
+        self.assertNotIn("チーム", gen.ja_sidecar_path(self.video).read_text(encoding="utf-8"))
+
+    def test_chinese_sidecar_is_not_a_japanese_source(self):
+        chinese = self.video.with_name("ABP-758.chs.srt")
+        chinese.write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\n" + ("せんぱい" * 20) + "\n", encoding="utf-8")
+        self.assertIsNone(japanese_source_cues(self.video))
+        chinese.unlink()
+        self.video.with_name("ABP-758.zh.srt").write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\n" + ("あ" * 20) + "\n", encoding="utf-8")
+        self.assertIsNone(japanese_source_cues(self.video))
+        self.video.with_name("ABP-758.srt").write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\n外挂原文\n", encoding="utf-8")
+        cues = japanese_source_cues(self.video)
+        self.assertEqual(cues[0][2], "外挂原文")
+        self.video.with_name("ABP-758.srt").unlink()
+        self.video.with_name("ABP-758.zh.srt").unlink()
+        self.video.with_name("ABP-758.vtt").write_text(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n先輩です\n", encoding="utf-8")
+        self.assertEqual(japanese_source_cues(self.video)[0][2], "先輩です")
+        self.video.with_name("ABP-758.vtt").unlink()
+        english = self.video.with_name("ABP-758.en.srt")
+        english.write_text("1\n00:00:01,000 --> 00:00:02,000\nhello\n", encoding="utf-8")
+        self.assertIsNone(japanese_source_cues(self.video))
+        english.write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\n" + ("こんにちは" * 4) + "\n", encoding="utf-8")
+        self.assertIn("こんにちは", japanese_source_cues(self.video)[0][2])
+
+    def test_a_broken_sidecar_falls_back_to_asr(self):
+        self.video.with_name("ABP-758.srt").write_text("这不是字幕\n", encoding="utf-8")
+        self.service._run_one(7)
+        self.assertEqual(self.translated, ["先輩"])
+        _path, marker = gen.sidecar_paths(self.video)
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["source"], "asr")
+
+    def test_ignore_and_retry_move_the_queue(self):
+        self.service._persist_enabled = lambda _enabled: ""
+        self.service._set(4, "failed", "译文是空的")
+        self.assertEqual(self.service.snapshot()["counts"]["failed"], 1)
+        retried = self.service.retry(4)
+        self.assertEqual(retried["queued"][0]["id"], 4)
+        self.assertEqual(retried["counts"]["failed"], 0)
+        ignored = self.service.ignore(4)
+        self.assertEqual(ignored["counts"]["queued"], 0)
+        self.assertEqual(ignored["skipped"][0]["message"], "已忽略")
+        self.assertEqual(ignored["counts"]["skipped"], 1)
+
+    def test_the_switch_applies_before_the_config_file(self):
+        self.service._persist_enabled = lambda _enabled: "只在本次运行有效"
+        closed = self.service.set_enabled(False)
+        self.assertFalse(closed["enabled"])
+        self.assertEqual(closed["notice"], "只在本次运行有效")
+        self.assertFalse(self.service.effective_enabled())
+
+
+class AsrFilterTests(unittest.TestCase):
+    def test_low_confidence_and_music_segments_are_dropped(self):
+        class Segment:
+            def __init__(self, text, **fields):
+                self.text = text
+                self.start = fields.get("start", 0.0)
+                self.end = fields.get("end", 1.0)
+                self.no_speech_prob = fields.get("no_speech_prob", 0.0)
+                self.compression_ratio = fields.get("compression_ratio", 1.0)
+                self.avg_logprob = fields.get("avg_logprob", -0.2)
+
+        class Model:
+            def transcribe(self, _path, **options):
+                self.options = options
+                return [
+                    Segment("こんにちは", start=0.0, end=1.0),
+                    Segment("オープニング", no_speech_prob=0.9),
+                    Segment("あ" * 40, compression_ratio=2.4),
+                    Segment("聞き取れない", avg_logprob=-1.2),
+                    Segment("   "),
+                ], None
+
+        model = Model()
+        cues = cues_from_model(model, Path("unused.wav"), SubtitleSettings())
+        self.assertEqual([text for _start, _end, text in cues], ["こんにちは"])
+        self.assertEqual(model.options["language"], "ja")
+        self.assertTrue(model.options["vad_filter"])
+        self.assertEqual(model.options["no_speech_threshold"], gen._NO_SPEECH_PROB)
+        self.assertEqual(model.options["compression_ratio_threshold"], gen._COMPRESSION_RATIO)
+        self.assertEqual(model.options["log_prob_threshold"], gen._AVG_LOGPROB)
 
 
 class ListingTests(unittest.TestCase):
@@ -577,5 +722,17 @@ class ListingTests(unittest.TestCase):
                 db_path=database, configured=True, token="",
                 allowed_media_roots=(media,)))) as client:
             payload = client.get("/api/assets/1/subtitles").json()
+            service = client.app.state.subtitle_generation
+            service.stop()
+            service._persist_enabled = lambda _enabled: ""
+            service._set(1, "failed", "没有识别到日语对白")
+            status = client.get("/api/subtitles/generation").json()
+            self.assertEqual(status["failed"][0]["name"], "ABP-758.mp4")
+            self.assertEqual(client.post("/api/subtitles/generation", json={"enabled": False}).json()["enabled"], False)
+            self.assertEqual(client.post("/api/subtitles/generation/retry", json={"id": 1}).json()["counts"]["queued"], 1)
+            ignored = client.post("/api/subtitles/generation/ignore", json={"id": 1}).json()
+            self.assertEqual(ignored["counts"]["skipped"], 1)
+            self.assertEqual(client.post("/api/subtitles/generation", json={"enabled": "yes"}).status_code, 400)
+            service.stop()
         self.assertEqual(payload["generation"]["pending"], False)
         self.assertIn("subtitles", payload)
