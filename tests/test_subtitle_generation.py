@@ -715,6 +715,115 @@ class AsrFilterTests(unittest.TestCase):
         self.assertEqual(model.options["log_prob_threshold"], gen._AVG_LOGPROB)
 
 
+class TranslationRepairTests(unittest.TestCase):
+    """整片译文对不齐时按原行修好，修不好就保持失败。"""
+
+    def setUp(self):
+        self._previous = os.environ.get(gen.API_KEY_ENV)
+        os.environ[gen.API_KEY_ENV] = "test-key-not-a-secret"
+
+    def tearDown(self):
+        if self._previous is None:
+            os.environ.pop(gen.API_KEY_ENV, None)
+        else:
+            os.environ[gen.API_KEY_ENV] = self._previous
+
+    def test_alignment_keeps_partial_numbering_from_sliding(self):
+        self.assertEqual(gen.align_translation("1. 甲\n2、乙", 2), ["甲", "乙"])
+        self.assertEqual(gen.align_translation("```\n1|甲\n2|乙\n```", 2), ["甲", "乙"])
+        self.assertEqual(gen.align_translation("甲\n乙", 2), ["甲", "乙"])
+        self.assertIsNone(gen.align_translation("1|甲\n乙", 2))
+        self.assertIsNone(gen.align_translation("1|甲\n1|乙\n2|丙", 2))
+        self.assertIsNone(gen.align_translation("1|甲", 2))
+
+    def test_wrong_line_count_retries_then_matches_every_cue(self):
+        client = _Replies(["1|甲", "1|甲\n2|乙"])
+        result = translate_with_deepseek(["おはよう", "こんにちは"], SubtitleSettings(), client=client)
+        self.assertEqual(result, ["甲", "乙"])
+        self.assertEqual(len(client.calls), 2)
+        self.assertIn("必须恰好输出 2 行", client.calls[1])
+
+    def test_unaligned_lines_are_retranslated_per_cue_with_the_same_timing(self):
+        client = _Replies(["1|早", "1|早", "1|早安", "1|你好"])
+        cues = [(0.0, 1.25, "おはよう"), (4.5, 6.0, "こんにちは")]
+        result = translate_with_deepseek(
+            [text for _start, _end, text in cues], SubtitleSettings(), client=client)
+        self.assertEqual(result, ["早安", "你好"])
+        self.assertEqual(len(client.calls), 4)
+        self.assertIn("こんにちは", client.calls[2])
+        self.assertIn("おはよう", client.calls[3])
+        srt = to_srt([(start, end, text) for (start, end, _source), text in zip(cues, result, strict=True)])
+        self.assertIn("00:00:00,000 --> 00:00:01,250", srt)
+        self.assertIn("00:00:04,500 --> 00:00:06,000", srt)
+        self.assertEqual(srt.count("-->"), 2)
+
+    def test_a_line_count_that_cannot_be_repaired_fails(self):
+        client = _Replies([""] * 4)
+        with self.assertRaises(gen.SubtitleGenerationError) as caught:
+            translate_with_deepseek(["おはよう", "こんにちは"], SubtitleSettings(), client=client)
+        self.assertIn("行数", str(caught.exception))
+        self.assertEqual(len(client.calls), 4)
+
+    def test_truncated_reply_is_requested_again(self):
+        client = _Replies(["1|甲\n2|乙", "1|甲\n2|乙"], finishes=["length", "stop"])
+        result = translate_with_deepseek(["おはよう", "こんにちは"], SubtitleSettings(), client=client)
+        self.assertEqual(result, ["甲", "乙"])
+        self.assertEqual(len(client.calls), 2)
+        self.assertIn("必须恰好输出 2 行", client.calls[1])
+
+    def test_glossary_chinese_stands_in_for_a_missing_placeholder(self):
+        client = _Replies(["1|前辈、这边来"])
+        result = translate_with_deepseek(["先輩、こっち"], SubtitleSettings(), client=client)
+        self.assertEqual(result, ["前辈、这边来"])
+        self.assertEqual(len(client.calls), 1)
+        self.assertIn("⟦P0⟧", client.calls[0])
+        self.assertNotIn("先輩 →", client.calls[0])
+        self.assertNotIn("→", client.system)
+
+    def test_a_mangled_placeholder_is_restored(self):
+        client = _Replies(["1|**P0**、这边"])
+        result = translate_with_deepseek(["先輩"], SubtitleSettings(), client=client)
+        self.assertEqual(result, ["前辈、这边"])
+        self.assertEqual(len(client.calls), 1)
+
+    def test_a_missing_placeholder_retries_then_succeeds(self):
+        client = _Replies(["1|这边来", "1|⟦P0⟧、这边来"])
+        result = translate_with_deepseek(["先輩、こっち"], SubtitleSettings(), client=client)
+        self.assertEqual(result, ["前辈、这边来"])
+        self.assertEqual(len(client.calls), 2)
+        self.assertIn("必须原样出现", client.calls[1])
+        self.assertIn("⟦P0⟧", client.calls[1])
+
+    def test_a_placeholder_that_cannot_be_restored_fails(self):
+        client = _Replies(["1|这边来", "1|这边来"])
+        with self.assertRaises(gen.SubtitleGenerationError) as caught:
+            translate_with_deepseek(["先輩"], SubtitleSettings(), client=client)
+        self.assertIn("占位符", str(caught.exception))
+        self.assertEqual(len(client.calls), 2)
+
+
+class _Replies:
+    def __init__(self, replies: list[str], finishes: list[str | None] | None = None):
+        self.replies = list(replies)
+        self.finishes = list(finishes or [])
+        self.calls: list[str] = []
+        self.system = ""
+
+    def post(self, url, json, headers):
+        del url, headers
+        self.calls.append(json["messages"][1]["content"])
+        self.system = json["messages"][0]["content"]
+        content = self.replies.pop(0)
+        finish = self.finishes.pop(0) if self.finishes else None
+        choice = {"message": {"content": content}}
+        if finish:
+            choice["finish_reason"] = finish
+        return SimpleNamespace(status_code=200, json=lambda body={"choices": [choice]}: body)
+
+    def close(self):
+        return None
+
+
 class ListingTests(unittest.TestCase):
     def test_the_subtitle_list_reports_generation_without_starting_work(self):
         from peach.api import create_app
