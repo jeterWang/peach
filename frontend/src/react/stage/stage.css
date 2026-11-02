@@ -404,3 +404,10 @@ html[data-peach-fullwindow] [data-stage]:has(.video-js[data-peach-fullwindow]){i
 html[data-peach-fullwindow] [data-stage-media]:has(>.video-js[data-peach-fullwindow]),
 html[data-peach-fullwindow] [data-stage-scroll]:has(.video-js[data-peach-fullwindow]){overflow:visible!important;height:100dvh!important;max-height:none!important;border-radius:0!important}
 html[data-peach-fullwindow] [data-stage-media]>.video-js[data-peach-fullwindow]{width:100vw!important;height:100dvh!important;max-height:none!important;aspect-ratio:auto!important}
+@media (orientation:portrait){
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-tech{position:absolute!important;z-index:0!important;
+    inset:auto!important;top:0!important;left:100vw!important;right:auto!important;bottom:auto!important;
+    width:100vh!important;width:100dvh!important;height:100vw!important;max-width:none!important;max-height:none!important;
+    transform:rotate(90deg)!important;transform-origin:top left!important;object-fit:cover!important}
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] :is(.vjs-control-bar,.vjs-peach-captions){z-index:3!important;transform:none!important}
+}

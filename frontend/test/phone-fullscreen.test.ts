@@ -1,7 +1,7 @@
 /* iPhone 页内全屏：桌面和宽屏不拦截，窄触屏的 iPhone 铺满视口。 */
 import { describe, expect, it } from 'vitest';
 
-import { planFullWindow, prefersFullWindow, setFullWindow } from '../src/player/phone-fullscreen';
+import { fullWindowRotation, planFullWindow, prefersFullWindow, setFullWindow } from '../src/player/phone-fullscreen';
 
 const iphone = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
 
@@ -19,6 +19,16 @@ describe('页内全屏计划', () => {
     expect(prefersFullWindow(true, 'Mozilla/5.0 (iPod touch; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15')).toBe(true);
     expect(planFullWindow({ fullWindow: true, active: false })).toBe('enter');
     expect(planFullWindow({ fullWindow: true, active: true })).toBe('exit');
+  });
+});
+
+describe('竖屏页内全屏的画面方向', () => {
+  it('横屏和未知尺寸转 90°，竖屏片源不转', () => {
+    expect(fullWindowRotation(true, true, 1920, 1080)).toBe('90');
+    expect(fullWindowRotation(true, true, 0, 0)).toBe('90');
+    expect(fullWindowRotation(true, true, 1080, 1920)).toBe('');
+    expect(fullWindowRotation(true, false, 1920, 1080)).toBe('');
+    expect(fullWindowRotation(false, true, 1920, 1080)).toBe('');
   });
 });
 

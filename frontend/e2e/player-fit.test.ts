@@ -161,6 +161,38 @@ describe(`竖屏窄视口播放器：${label}`, () => {
     } finally { await page.close() }
   });
 
+  it('390×844 页内全屏把横屏画面转 90° 贴满长边，控制条不转', { timeout: 30_000 }, async () => {
+    const page = await open({ width: 390, height: 844 });
+    try {
+      await page.evaluate(() => {
+        document.documentElement.setAttribute('data-peach-fullwindow', '');
+        document.querySelector('.video-js')!.setAttribute('data-peach-fullwindow', '');
+        document.querySelector('.video-js')!.setAttribute('data-peach-rotate', '90');
+      });
+      const turned = await page.locator('video').evaluate((node) => {
+        const style = getComputedStyle(node);
+        const box = node.getBoundingClientRect();
+        const matrix = new DOMMatrix(style.transform);
+        const bar = node.closest('.video-js')!.querySelector('.vjs-control-bar')!;
+        const barBox = bar.getBoundingClientRect();
+        return {
+          fit: style.objectFit,
+          clockwise: Math.abs(matrix.b - 1) < .05 && Math.abs(matrix.c + 1) < .05,
+          width: box.width, height: box.height,
+          barTransform: getComputedStyle(bar).transform,
+          barBottom: barBox.bottom, barWidth: barBox.width,
+        };
+      });
+      assert.equal(turned.fit, 'cover');
+      assert.equal(turned.clockwise, true);
+      assert.ok(turned.width > 390 * .9, `转过后的宽度 ${turned.width}px`);
+      assert.ok(turned.height > 844 * .9, `转过后的高度 ${turned.height}px`);
+      assert.equal(turned.barTransform, 'none');
+      assert.ok(turned.barBottom > 844 - 120, `控制条不在竖屏底部：${turned.barBottom}`);
+      assert.ok(turned.barWidth > 200);
+    } finally { await page.close() }
+  });
+
   it('桌面没有页内全屏属性时仍是 16:9', { timeout: 30_000 }, async () => {
     const page = await open({ width: 1280, height: 800 });
     try {

@@ -33,5 +33,14 @@ export function setFullWindow(root: HTMLElement, active: boolean): void {
 }
 
 export function exitFullWindow(root: HTMLElement | null): void {
-  if (root) setFullWindow(root, false);
+  if (!root) return;
+  setFullWindow(root, false);
+  root.removeAttribute('data-peach-rotate');
+}
+
+/** 竖屏页内全屏里，横屏或尚未读到尺寸的画面转 90° 去贴长边。竖屏片源不转。 */
+export function fullWindowRotation(active: boolean, portrait: boolean, videoWidth: number, videoHeight: number): '90' | '' {
+  if (!active || !portrait) return '';
+  if (videoWidth > 0 && videoHeight > videoWidth) return '';
+  return '90';
 }

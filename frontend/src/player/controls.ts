@@ -14,7 +14,7 @@ import { mountPlayerRotation } from './rotation';
 import { mountPlayerPipControl } from './pip';
 import { mountPlaybackRate, playerMemory } from './memory';
 import {
-  exitFullWindow, fullWindowActive, fullWindowOnThisDevice, planFullWindow, setFullWindow,
+  exitFullWindow, fullWindowActive, fullWindowOnThisDevice, fullWindowRotation, planFullWindow, setFullWindow,
 } from './phone-fullscreen';
 
 type TooltipSync = (label?: string, aria?: string) => void;
@@ -516,9 +516,20 @@ function mountPlayerChromeLayout(player: VjsPlayer): void {
   /* CSS 的 `.vjs-fullscreen` 只能覆盖 Video.js 已经同步状态类的路径。实际浏览器还可能
      走 full-window 回退，或者先触发 fullscreenchange、下一帧才完成 class 更新。把播放器
      自己的 `isFullscreen()` 结果登记到 DOM，画面填充不再依赖某一个实现细节类名。 */
+  const syncFullscreenFrame = () => {
+    const root = player.el();
+    const video = root.querySelector('video');
+    const turn = fullWindowRotation(
+      fullWindowActive(root), matchMedia('(orientation: portrait)').matches,
+      video?.videoWidth || 0, video?.videoHeight || 0,
+    );
+    if (turn) root.setAttribute('data-peach-rotate', turn);
+    else root.removeAttribute('data-peach-rotate');
+  };
   const syncFullscreenState = () => {
     const active = !!player.isFullscreen() || fullWindowActive(player.el());
     player.el().toggleAttribute('data-peach-fullscreen', active);
+    syncFullscreenFrame();
     fullscreenUse?.setAttribute('href', active ? '#i-player-fullscreen-exit' : '#i-player-fullscreen-enter');
     syncFullscreenTooltip(active ? '退出全屏' : '全屏');
     resizeSoon(player);
@@ -541,7 +552,14 @@ function mountPlayerChromeLayout(player: VjsPlayer): void {
     syncFullscreenState();
   };
   document.addEventListener('keydown', onEscape);
-  player.on('dispose', () => { document.removeEventListener('keydown', onEscape); exitFullWindow(player.el()) });
+  const portraitQuery = matchMedia('(orientation: portrait)');
+  portraitQuery.addEventListener('change', syncFullscreenFrame);
+  player.on('dispose', () => {
+    document.removeEventListener('keydown', onEscape);
+    portraitQuery.removeEventListener('change', syncFullscreenFrame);
+    exitFullWindow(player.el());
+  });
+  player.el().querySelector('video')?.addEventListener('loadedmetadata', syncFullscreenFrame);
   syncFullscreenState();
   const controls = [
     pip,
