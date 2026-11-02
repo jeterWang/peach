@@ -190,6 +190,24 @@ describe(`竖屏窄视口播放器：${label}`, () => {
       assert.equal(turned.barTransform, 'none');
       assert.ok(turned.barBottom > 844 - 120, `控制条不在竖屏底部：${turned.barBottom}`);
       assert.ok(turned.barWidth > 200);
+      await page.locator('.video-js').evaluate((root) => {
+        const captions = document.createElement('div');
+        captions.className = 'vjs-peach-captions';
+        captions.innerHTML = '<div class="vjs-peach-caption-window"><span class="vjs-peach-caption-line">字幕</span></div>';
+        root.append(captions);
+      });
+      const caption = await page.locator('.vjs-peach-captions').evaluate((node) => {
+        const style = getComputedStyle(node);
+        const matrix = new DOMMatrix(style.transform);
+        const line = node.querySelector('.vjs-peach-caption-line')!.getBoundingClientRect();
+        return {
+          clockwise: Math.abs(matrix.b - 1) < .05 && Math.abs(matrix.c + 1) < .05,
+          lineLeft: line.left, lineTop: line.top,
+        };
+      });
+      assert.equal(caption.clockwise, true, '字幕要和画面同向旋转');
+      assert.ok(caption.lineLeft < 80, `字幕不在横屏底边：left ${caption.lineLeft}`);
+      assert.ok(caption.lineTop > 40 && caption.lineTop < 800, `字幕不沿长边：top ${caption.lineTop}`);
     } finally { await page.close() }
   });
 

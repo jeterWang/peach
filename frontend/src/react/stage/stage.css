@@ -409,5 +409,12 @@ html[data-peach-fullwindow] [data-stage-media]>.video-js[data-peach-fullwindow]{
     inset:auto!important;top:0!important;left:100vw!important;right:auto!important;bottom:auto!important;
     width:100vh!important;width:100dvh!important;height:100vw!important;max-width:none!important;max-height:none!important;
     transform:rotate(90deg)!important;transform-origin:top left!important;object-fit:cover!important}
-  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] :is(.vjs-control-bar,.vjs-peach-captions){z-index:3!important;transform:none!important}
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-control-bar{z-index:3!important;transform:none!important}
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-peach-captions{position:absolute!important;z-index:3!important;
+    inset:auto!important;top:0!important;left:100vw!important;right:auto!important;bottom:auto!important;
+    box-sizing:border-box;width:100vh!important;width:100dvh!important;height:100vw!important;max-width:none!important;
+    align-items:flex-end;justify-content:center;padding:0 5% 8%!important;
+    transform:rotate(90deg)!important;transform-origin:top left!important}
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-peach-captions:not([hidden]){display:flex!important}
+  [data-stage-media] .video-js.vjs-user-inactive.vjs-playing[data-peach-fullwindow][data-peach-rotate="90"] .vjs-peach-captions{bottom:auto!important;padding-bottom:5%!important}
 }
