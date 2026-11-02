@@ -585,6 +585,31 @@ Peach 配置「媒体库与入库 → 视频预览」中的「抽帧解码方式
 
 播放器进度条可以复用视频旁的 Jellyfin Trickplay、Emby／Roku／Plex 导出的 BIF、WebVTT 图片索引、HLS 和 DASH 图片轨。已有产物只读，时间轴采集遇到可用预览会跳过。命名、读取范围和缺少时间索引时的处理见[已有时间轴预览](VIDEO_PREVIEWS.md)。
 
+### 本地中文字幕
+
+这项功能默认关闭，不随普通安装启用。它在本机识别音轨并写出简体中文字幕，播放器按现有字幕轨加载。中文、粤语音频直接转写成中文。其他语言先由 faster-whisper 译成英语，再由 Helsinki-NLP 的 OPUS-MT 英语到中文模型译成简体中文。faster-whisper 自己的翻译任务只产出英语，所以非中文要经过这一步。
+
+源码环境安装可选依赖：
+
+```text
+uv sync --locked --extra whisper
+```
+
+在 Peach 数据目录的 `config.toml` 增加：
+
+```toml
+[whisper]
+enabled = true
+model = "small"       # tiny、base、small、medium、large-v3、large-v3-turbo
+device = "cpu"        # cpu、cuda、auto
+compute_type = ""     # 留空时 CPU 用 int8，CUDA 用 float16
+output = "sidecar"    # sidecar：写在视频旁边的「视频名.zh.srt」；data：写到数据目录 generated/subtitles/
+```
+
+`enabled = false` 或删掉整张表时不会生成。改完后跑一次全库「扫描与采集」。结束时如果还有视频没有中文字幕，任务中心会出现「生成中文字幕」，每次处理一部，然后自动接续。
+
+语音模型由 faster-whisper 下载到数据目录 `generated/whisper/models`。英译中模型从 Tatoeba 的 OPUS-MT `opus-2020-07-17` 下载（CC-BY-4.0），转换后放在 `generated/whisper/opus-mt-en-zh`。计费或代理流量保护开着的来源会跳过，避免把整段音轨读下来。已经存在的 `视频名.zh.srt` 只登记进播放列表，不会覆盖。没有对白或抽轨失败会记在 `generated/whisper/attempts/`；视频大小或修改时间变了，或者删掉对应的 json，才会再试。需要本机 FFmpeg。
+
 ## 文件整理
 
 在「数据管理 → 整理」选择来源。右侧路径框可直接输入目录，旁边的文件夹按钮在运行 Peach 的电脑上打开目录选择窗口；远程访问或系统选择窗口不可用时，直接输入路径。路径留空表示整个来源，指定目录时包含其子目录。路径须属于所选来源；切换来源会清空路径。

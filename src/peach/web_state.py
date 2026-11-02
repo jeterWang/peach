@@ -195,6 +195,7 @@ class WebContract:
         from . import performer_alias_followup  # noqa: F401  登记补女优别名后继
         from . import performer_profile_followup  # noqa: F401  登记补女优资料后继
         from . import sample_followup  # noqa: F401  登记补番号样张后继
+        from . import whisper_subtitles  # noqa: F401  登记中文字幕后继
         from . import seed_followup  # noqa: F401  登记导入实体种子后继
         from . import studio_followup  # noqa: F401  登记补厂牌官网与标识后继
         from .followups import FollowupRunner

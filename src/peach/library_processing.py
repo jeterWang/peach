@@ -37,7 +37,7 @@ from .metadata import (candidate_text_is_valid, source_text_is_valid,
 from . import metadata_routes
 from . import media_identity
 from . import junk
-from . import sample_followup
+from . import sample_followup, whisper_subtitles
 from .metadata_policy import SOURCE_SPECS, preferred_tag_source
 from .platform import translate_ledger_path as _local_ledger_path
 from .review_csv import read_rows, write_rows
@@ -2199,6 +2199,8 @@ def _finish_collection(config, database, candidate_root, cover_root, groups, rem
         database, _candidate_scope(groups, asset_ids), config, candidate_root, remote, active, update, issue)
         if people else dict(aliases=0, avatars=0, conflicts=0, failed=0))
     followups = [] if asset_ids is not None else sample_followup.plan(database, config, cover_root)
+    if asset_ids is None:
+        followups += whisper_subtitles.plan(database, config, candidate_root)
     if people:
         followups += _entity_followups(database, config, watermark, covered, include_stock=asset_ids is None)
     return dict(followups=followups, auto_applied=auto_apply['applied'],

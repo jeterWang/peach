@@ -36,6 +36,7 @@ from . import (
     avatar_face, avatar_online, avatar_picker, avatar_provider, error_reporting,
     follow_assets, follow_providers, images,
     jav_poster_crop, link_marks, link_status, scraping_access, site_icons, social_links, subtitles,
+    whisper_subtitles,
     taste_history, timeline_sheets, web_follow, web_timeline_thumbnails,
 )
 from .config import GENERATED_DIR, PROJECT_ROOT
@@ -529,14 +530,22 @@ def _subtitle_rows(state, asset_id: int):
             known = {str(normalized_path(row["path"])).casefold() for row in rows}
             rows.extend(row for row in subtitles.discover_sidecars(video, VIDEO)
                         if row["path"].casefold() not in known)
+    generated = whisper_subtitles.generated_row(state.web_contract.candidate_root, asset_id)
+    if generated is not None and all(row["path"] != generated["path"] for row in rows):
+        rows.append(generated)
     return asset, rows
 
 
 def _subtitle_path(state, asset, row) -> Path | None:
     """字幕文件在本机的位置；逃出正片所在目录或授权根一律拒绝。
 
-    路径来自账本或同目录发现，这一层仍核对当前媒体授权根。
+    路径来自账本或同目录发现，这一层仍核对当前媒体授权根。数据目录里由
+    faster-whisper 写的那一份只接受「这个资产自己的文件」这一条路径。
     """
+    generated = whisper_subtitles.accepted_generated_file(
+        state.web_contract.candidate_root, asset.id, row.get("path"))
+    if generated is not None:
+        return generated
     if not asset.path:
         return None
     directory = normalized_path(asset.path).parent

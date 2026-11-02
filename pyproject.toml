@@ -89,6 +89,15 @@ naming = [
     "opencc==1.4.2",
     "wordninja-enhanced==3.2.0",
 ]
+# 本地中文字幕。faster-whisper 转写；非中文音轨经它译成英语后，用 CTranslate2
+# 跑 Helsinki-NLP OPUS-MT eng→zho。numpy 与 PyYAML 是该模型转换器的运行依赖。
+whisper = [
+    "faster-whisper==1.2.1",
+    "ctranslate2==4.8.4",
+    "sentencepiece==0.2.1",
+    "numpy==2.5.4",
+    "PyYAML==6.0.2",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
