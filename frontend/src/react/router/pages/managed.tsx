@@ -84,6 +84,7 @@ async function openProps(path: ManagedPath, run: Run): Promise<object | null> {
   }
   if (path.startsWith('/settings/')) {
     if (window.location.hash === '#peachProxy') writeShell({ configurationRequestedSection: '网络与访问' });
+    if (window.location.hash === '#subtitleGeneration') writeShell({ configurationRequestedSection: '应用与维护' });
     const section = search().get('section') || configurationRequestedSection || configurationSection(path);
     return (section ? { section } : {}) satisfies ManagedOpenProps['/settings/library'];
   }

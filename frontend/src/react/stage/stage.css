@@ -336,9 +336,9 @@ body[data-detail-open] [class~=glowlayer]::before{animation-play-state:paused,pa
 @media(max-width:1080px){
   [data-stage]>[data-stage-scroll]{max-height:calc(100dvh - 34px);overflow:hidden auto;overscroll-behavior:contain}
   [data-stage] [data-stage-media]:has(>.video-js){position:sticky;top:0;z-index:3}}
-/* 手机上浮窗离屏幕边只留 8px，画面格按视频自己的比例排：竖屏和方形视频装进 16:9 的格子里
+/* 手机上浮窗离屏幕边只留 8px。横屏仍按视频自己的比例排：竖向片源装进 16:9 的格子里
    只剩中间一小块画面。比例由播放器读到元数据后写进 `--peach-video-ratio`，读到之前仍是 16:9；
-   高度封顶 56dvh，吸顶以后下面至少还有四成屏给详情。
+   高度封顶 56dvh，吸顶以后下面至少还有四成屏给详情。设备竖屏另见文件末尾，那里把播放器拉高。
    上沿让出状态栏、下沿按 dvh 停在地址栏之上，浮窗和吸在它顶上的画面不钻到这两条栏底下。 */
 @media(max-width:760px){
   [data-stage]{inset:calc(env(safe-area-inset-top) + 8px) 8px auto;margin:0 auto;width:calc(100vw - 16px);max-width:calc(100vw - 16px);
@@ -380,3 +380,41 @@ body[data-detail-open] [class~=glowlayer]::before{animation-play-state:paused,pa
 [data-stage-close],[data-stage-close]:hover{background:rgba(0,0,0,.6);color:#fff}
 [data-stage-close]:hover:after,[data-stage-close]:focus-visible:after{background:rgba(255,255,255,.2)}
 [data-stage-close]:active:after{background:rgba(255,255,255,.3)}
+/* 设备竖屏、视口不宽于手机详情：播放器占用视口里大半高度，16:9 画面在框内按 contain 上下留黑，不裁切。
+   减去安全区和 120px 之后，滚动层里大约还露出 100px 标题，视频格仍吸顶。影院模式不进这条，
+   继续用原来的媒体区高度；桌面和横屏也匹配不到这条。 */
+@media (max-width:760px) and (orientation:portrait){
+  [data-stage]:not([data-theater]){
+    --peach-portrait-player:calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 120px);
+    --peach-portrait-player:calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 120px);
+    --detail-gallery-height:calc(var(--peach-portrait-player) - 116px)}
+  [data-stage]:not([data-theater]) [data-stage-media]:has(>.video-js){
+    height:var(--peach-portrait-player);max-height:none}
+  [data-stage]:not([data-theater]) [data-stage-media]:not([data-item-gallery]):not([data-jav-art])>.video-js,
+  [data-stage]:not([data-theater]) [data-stage-media]:not([data-item-gallery]):not([data-jav-art])>video{
+    width:100%;height:var(--peach-portrait-player);max-height:none;aspect-ratio:auto}
+  [data-stage]:not([data-theater]) [data-stage-scroll] :is([data-jav-video]>[class~="video-js"],[data-item-gallery]>[class~="video-js"]){
+    width:100%;height:var(--detail-gallery-height);max-height:none;aspect-ratio:auto}
+}
+/* 页内全屏盖住竖屏高度。舞台上的 transform / overflow 会把 fixed 关在对话框里，这里拆掉。
+   属性只由 iPhone 的全屏按钮写上，桌面没有这条状态。 */
+html[data-peach-fullwindow] [data-stage]:has(.video-js[data-peach-fullwindow]){inset:0!important;width:100vw!important;max-width:none!important;
+  height:100vh!important;height:100dvh!important;max-height:none!important;margin:0!important;border-radius:0!important;
+  transform:none!important;filter:none!important;animation:none!important;overflow:visible!important}
+html[data-peach-fullwindow] [data-stage-media]:has(>.video-js[data-peach-fullwindow]),
+html[data-peach-fullwindow] [data-stage-scroll]:has(.video-js[data-peach-fullwindow]){overflow:visible!important;height:100dvh!important;max-height:none!important;border-radius:0!important}
+html[data-peach-fullwindow] [data-stage-media]>.video-js[data-peach-fullwindow]{width:100vw!important;height:100dvh!important;max-height:none!important;aspect-ratio:auto!important}
+@media (orientation:portrait){
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-tech{position:absolute!important;z-index:0!important;
+    inset:auto!important;top:0!important;left:100vw!important;right:auto!important;bottom:auto!important;
+    width:100vh!important;width:100dvh!important;height:100vw!important;max-width:none!important;max-height:none!important;
+    transform:rotate(90deg)!important;transform-origin:top left!important;object-fit:cover!important}
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-control-bar{z-index:3!important;transform:none!important}
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-peach-captions{position:absolute!important;z-index:3!important;
+    inset:auto!important;top:0!important;left:100vw!important;right:auto!important;bottom:auto!important;
+    box-sizing:border-box;width:100vh!important;width:100dvh!important;height:100vw!important;max-width:none!important;
+    align-items:flex-end;justify-content:center;padding:0 5% 8%!important;
+    transform:rotate(90deg)!important;transform-origin:top left!important}
+  [data-stage-media] .video-js[data-peach-fullwindow][data-peach-rotate="90"] .vjs-peach-captions:not([hidden]){display:flex!important}
+  [data-stage-media] .video-js.vjs-user-inactive.vjs-playing[data-peach-fullwindow][data-peach-rotate="90"] .vjs-peach-captions{bottom:auto!important;padding-bottom:5%!important}
+}
