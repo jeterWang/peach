@@ -4,7 +4,8 @@
 没有这种外挂时，日语音轨用 faster-whisper 加载 kotoba-whisper（或配置里的其他
 CTranslate2 权重），`language` 固定为 `ja`，并丢掉无语音、重复乱码和置信度过低的段。
 识别或外挂文本先交给 DeepSeek 校对日语，空白行在翻译前丢掉，再整片译成中文。
-校对只改文字。密钥只读 `DEEPSEEK_API_KEY`。
+整片译文缺行、跳号或弄丢术语占位符时，按确切行数再请求一次；仍对不齐就按原行拆开重译。
+每行中文对着该条日语的时间轴，不增删字幕条。校对只改文字。密钥只读 `DEEPSEEK_API_KEY`。
 已经有中文外挂，或 ffprobe 能看见内嵌中文轨的，整条跳过。
 
 生成的 `影片名.chs.srt` 和校对后的 `影片名.ja.srt` 跟正片同目录，沿用现有 sidecar 配对；
@@ -71,7 +72,7 @@ DEFAULT_STYLE = (
     "不要拒绝，不要点评，不要解释。"
 )
 OUTPUT_CONTRACT = (
-    "占位符 __P0__、__P1__ 这种记号必须原样保留。"
+    "占位符 ⟦P0⟧、⟦P1⟧ 这种记号必须原样保留，不要翻译，也不要改写成中文。"
     "识别垃圾或不通的句子按前后文推断原意，不要照译错词；空白行保持空白。"
     "只输出编号译文，不要加说明。"
 )
@@ -101,6 +102,18 @@ POLISH_INTRO = (
 TRANSLATE_CARRY = "已确定的译法保持不变，这些行不要再次输出："
 POLISH_CARRY = "前面已经改成这些说法，同一称呼保持一致，这些行不要再次输出："
 _NUMBERED = re.compile(r"^\s*(\d+)\s*[\|｜]\s*(.*)$")
+_NUMBERED_LOOSE = re.compile(r"^\s*(\d+)\s*[\|｜.、:：)）]\s*(.*)$")
+_CANONICAL_TOKEN = re.compile(r"⟦P\d+⟧")
+# `__P0__` 会被模型当成 Markdown 强调，星号、下划线和各种括号都要收回来。
+_PLACEHOLDER_MUTATION = re.compile(
+    r"(?:⟦\s*[Pp]\s*(\d+)\s*⟧"
+    r"|__\s*[Pp]\s*(\d+)\s*__"
+    r"|\*\*\s*[Pp]\s*(\d+)\s*\*\*"
+    r"|\[\s*[Pp]\s*(\d+)\s*\]"
+    r"|【\s*[Pp]\s*(\d+)\s*】)"
+)
+# 整片对不齐时按这个粒度拆开。每一级都比上一级短，最后逐行，避免在同一长度上打转。
+_REPAIR_SIZES = (40, 8)
 # 单次请求的安全预算是 900_000 token（输入估测 + 这次译文的输出估测）。
 # deepseek-flash / deepseek-v4-pro 上下文约 1_000_000，输出上限 384_000（393_216）。
 # 非思考模式省略 max_tokens 时接口默认只有 8_192，整部影片的译文会在中途截断，
@@ -173,7 +186,7 @@ def protect(text: str, glossary: Sequence[tuple[str, str]]) -> tuple[str, tuple[
     for source, target in sorted(glossary, key=lambda item: len(item[0]), reverse=True):
         if not source or source not in text:
             continue
-        token = f"__P{len(slots)}__"
+        token = f"⟦P{len(slots)}⟧"
         text = text.replace(source, token)
         slots.append((token, target))
     return text, tuple(slots)
@@ -213,10 +226,11 @@ def load_glossary(settings: SubtitleSettings) -> tuple[tuple[str, str], ...]:
 
 
 def style_prompt(settings: SubtitleSettings, glossary: Sequence[tuple[str, str]]) -> str:
+    """系统提示。术语已经换成占位符，不把日文到中文的对照表放进提示。"""
+    # `glossary` 由调用方传入，占位符在用户文本里，不在这里展开。
+    del glossary
     base = settings.system_prompt.strip() or DEFAULT_STYLE
-    table = "\n".join(f"{source} → {target}" for source, target in glossary)
-    extra = f"\n术语按这个表：\n{table}" if table else ""
-    return base + extra + "\n" + OUTPUT_CONTRACT
+    return base + "\n" + OUTPUT_CONTRACT
 
 
 def parse_numbered(text: str, count: int) -> list[str]:
@@ -228,6 +242,97 @@ def parse_numbered(text: str, count: int) -> list[str]:
     if any(index not in found for index in range(1, count + 1)):
         raise SubtitleGenerationError("译文行数与原文不一致")
     return [found[index] for index in range(1, count + 1)]
+
+
+def _strip_fence(text: str) -> str:
+    lines = str(text).splitlines()
+    if lines and lines[0].lstrip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines)
+
+
+def _indexed_lines(text: str, pattern: re.Pattern[str]) -> dict[int, str] | None:
+    """同一编号出现两次就返回 None，避免后一行盖住前一条字幕。"""
+    found: dict[int, str] = {}
+    for line in text.splitlines():
+        match = pattern.match(line.strip())
+        if not match:
+            continue
+        index = int(match.group(1))
+        if index in found:
+            return None
+        found[index] = match.group(2).strip()
+    return found
+
+
+def align_translation(text: str, count: int) -> list[str] | None:
+    """把模型输出对齐成恰好 `count` 行。对不齐时返回 None，不补空行、不丢掉多出来的行。
+
+    先认 `编号|`，再认 `1.`、`1、` 这类编号。模型完全没写编号、但非空行数正好相等时，
+    按出现顺序对齐。已经写了编号却缺号或重号时，不改按顺序硬套。
+    """
+    if count < 0:
+        return None
+    if count == 0:
+        return []
+    body = _strip_fence(text)
+    numbered = False
+    for pattern in (_NUMBERED, _NUMBERED_LOOSE):
+        found = _indexed_lines(body, pattern)
+        if found is None:
+            numbered = True
+            continue
+        if found:
+            numbered = True
+        if len(found) == count and all(index in found for index in range(1, count + 1)):
+            return [found[index] for index in range(1, count + 1)]
+    if numbered:
+        return None
+    content = [
+        line.strip() for line in body.splitlines()
+        if line.strip() and not line.strip().startswith("```")
+    ]
+    if len(content) == count:
+        return content
+    return None
+
+
+def normalize_placeholders(text: str, slots: Sequence[tuple[str, str]]) -> str:
+    """把 Markdown 强调和变体括号收成 `⟦Pn⟧`。不是这份术语里的编号保持原样。"""
+    wanted = {token for token, _target in slots}
+
+    def replace(match: re.Match[str]) -> str:
+        number = next(group for group in match.groups() if group is not None)
+        token = f"⟦P{int(number)}⟧"
+        return token if token in wanted else match.group(0)
+
+    return _PLACEHOLDER_MUTATION.sub(replace, text)
+
+
+def _target_hits(text: str, target: str, slots: Sequence[tuple[str, str]]) -> int:
+    """数目标中文出现了几次。更长的译法先遮住，避免「老公」算进「老公啊」。"""
+    masked = text
+    for _token, other in slots:
+        if other != target and target in other:
+            masked = masked.replace(other, "\u0000" * len(other))
+    return masked.count(target)
+
+
+def apply_slots(protected: str, text: str, slots: Sequence[tuple[str, str]]) -> str | None:
+    """占位符换回指定中文。记号被改写成对应中文、且次数够，也算换回；不够就返回 None。"""
+    if not slots:
+        return text
+    normalized = normalize_placeholders(text, slots)
+    for token, target in slots:
+        need = protected.count(token)
+        if need <= 0:
+            continue
+        have = normalized.count(token)
+        if have < need and _target_hits(normalized, target, slots) < need - have:
+            return None
+    return restore(normalized, slots)
 
 
 def to_srt(cues: Sequence[tuple[float, float, str]]) -> str:
@@ -257,7 +362,11 @@ def _safe(text: str, key: str) -> str:
 def translate_with_deepseek(
     lines: Sequence[str], settings: SubtitleSettings, *, client=None,
 ) -> list[str]:
-    """把一部影片的对白一次交给 DeepSeek。超长片才按大块续译。`client` 只在测试里替换。"""
+    """把一部影片的对白一次交给 DeepSeek。超长片才按大块续译。`client` 只在测试里替换。
+
+    整片结果缺行或丢掉术语占位符时，先按确切行数再请求一次，仍对不齐就按原行拆开重译。
+    返回值和输入等长，调用方用同一下标配时间轴。
+    """
     key = os.environ.get(API_KEY_ENV, "").strip()
     if not key:
         raise SubtitleGenerationError("未设置 DEEPSEEK_API_KEY")
@@ -277,20 +386,148 @@ def translate_with_deepseek(
     memory: list[tuple[str, str]] = []
     try:
         for start, end in _slice_plan(protected, settings, glossary):
-            piece = _deepseek_batch(
-                protected[start:end], settings, glossary, key, client, _carry_pairs(memory),
-            )
-            for source, slot, text in zip(originals[start:end], slots[start:end], piece, strict=True):
-                missing = [token for token, _target in slot if token not in text]
-                if missing:
-                    raise SubtitleGenerationError("译文丢掉了术语占位符")
-                restored = "" if not str(source).strip() else restore(text, slot)
-                translated.append(restored)
-                _remember(memory, source, restored, slot)
+            translated.extend(_translate_span(
+                protected[start:end], originals[start:end], slots[start:end],
+                settings, glossary, key, client, memory,
+            ))
     finally:
         if own:
             client.close()
     return translated
+
+
+def _restore_span(
+    originals: Sequence[str], protected: Sequence[str],
+    slots: Sequence[Sequence[tuple[str, str]]], piece: Sequence[str],
+) -> list[str] | None:
+    restored: list[str] = []
+    for source, protected_line, slot, text in zip(originals, protected, slots, piece, strict=True):
+        if not str(source).strip():
+            restored.append("")
+            continue
+        applied = apply_slots(protected_line, text, slot)
+        if applied is None:
+            return None
+        restored.append(applied)
+    return restored
+
+
+def _remember_span(
+    memory: list[tuple[str, str]], originals: Sequence[str],
+    slots: Sequence[Sequence[tuple[str, str]]], restored: Sequence[str],
+) -> None:
+    for source, slot, text in zip(originals, slots, restored, strict=True):
+        _remember(memory, source, text, slot)
+
+
+def _placeholder_repair(groups: Sequence[Sequence[tuple[str, str]]]) -> str:
+    tokens: list[str] = []
+    for group in groups:
+        for token, _target in group:
+            if token not in tokens:
+                tokens.append(token)
+    if not tokens:
+        return ""
+    shown = "、".join(tokens[:12])
+    suffix = "等" if len(tokens) > 12 else ""
+    return f"术语占位符必须原样出现在对应行里：{shown}{suffix}。不要写成中文，也不要删掉。"
+
+
+def _line_repair(count: int) -> str:
+    return (
+        f"必须恰好输出 {count} 行，编号从 1 到 {count}，每行以「编号|」开头。"
+        "不要合并两行，不要跳号，不要多行，不要加说明。"
+    )
+
+
+def _repair_size(count: int) -> int:
+    for size in _REPAIR_SIZES:
+        if count > size:
+            return size
+    return 1
+
+
+def _can_split(error: BaseException | None, count: int) -> bool:
+    if error is None or count <= 1:
+        return False
+    message = str(error)
+    return "行数" in message or "占位符" in message
+
+
+def _neighbor_note(lines: Sequence[str], start: int, end: int) -> str:
+    before = [line for line in lines[max(0, start - 2):start] if str(line).strip()]
+    after = [line for line in lines[end:end + 2] if str(line).strip()]
+    parts = []
+    if before:
+        parts.append("上文只供理解，不要输出：" + " / ".join(before))
+    if after:
+        parts.append("下文只供理解，不要输出：" + " / ".join(after))
+    return "\n".join(parts)
+
+
+def _translate_span(
+    protected: Sequence[str], originals: Sequence[str], slots: Sequence[tuple[tuple[str, str], ...]],
+    settings: SubtitleSettings, glossary, key: str, client, memory: list[tuple[str, str]], *,
+    extra: str = "",
+) -> list[str]:
+    """译这一段。行数或占位符对不齐时拆成更短的段，每段仍按原顺序返回。"""
+    failure: SubtitleGenerationError | None = None
+    restored: list[str] | None = None
+    try:
+        restored = _restore_span(
+            originals, protected, slots,
+            _deepseek_batch(
+                protected, settings, glossary, key, client, _carry_pairs(memory), extra=extra,
+            ),
+        )
+    except SubtitleGenerationError as exc:
+        failure = exc
+    if restored is not None:
+        _remember_span(memory, originals, slots, restored)
+        return restored
+    repair = _placeholder_repair(slots) if failure is None else ""
+    if repair:
+        try:
+            restored = _restore_span(
+                originals, protected, slots,
+                _deepseek_batch(
+                    protected, settings, glossary, key, client, _carry_pairs(memory),
+                    extra=extra, repair=repair,
+                ),
+            )
+        except SubtitleGenerationError as exc:
+            failure = exc
+            restored = None
+        if restored is not None:
+            _remember_span(memory, originals, slots, restored)
+            return restored
+        if failure is None:
+            failure = SubtitleGenerationError("译文丢掉了术语占位符")
+    elif failure is None:
+        failure = SubtitleGenerationError("译文丢掉了术语占位符")
+    if _can_split(failure, len(protected)):
+        return _translate_split(
+            protected, originals, slots, settings, glossary, key, client, memory,
+        )
+    if failure is None:
+        failure = SubtitleGenerationError("译文行数与原文不一致")
+    raise failure
+
+
+def _translate_split(
+    protected: Sequence[str], originals: Sequence[str], slots: Sequence[tuple[tuple[str, str], ...]],
+    settings: SubtitleSettings, glossary, key: str, client, memory: list[tuple[str, str]],
+) -> list[str]:
+    size = _repair_size(len(protected))
+    output: list[str] = []
+    for offset in range(0, len(protected), size):
+        end = offset + size
+        output.extend(_translate_span(
+            protected[offset:end], originals[offset:end], slots[offset:end],
+            settings, glossary, key, client, memory,
+            extra=_neighbor_note(protected, offset, end),
+        ))
+    return output
 
 
 def polish_prompt(_settings: SubtitleSettings) -> str:
@@ -427,26 +664,36 @@ def _carry_pairs(memory: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
 def _deepseek_batch(
     lines, settings: SubtitleSettings, glossary, key: str, client, carry=(), *,
     system: str | None = None, intro: str | None = None, carry_note: str | None = None,
+    extra: str = "", repair: str | None = None,
 ) -> list[str]:
+    """请求一次。行数对不齐或输出被截断时，用写明行数的提示再请求一次。"""
     system_text = style_prompt(settings, glossary) if system is None else system
     if intro is None:
-        user = _numbered(lines, carry)
+        base_user = _numbered(lines, carry)
     else:
-        user = _message(intro, lines, carry, carry_note or POLISH_CARRY)
-    payload = {
-        "model": settings.deepseek_model,
-        "temperature": 0.3,
-        # 当前接口默认开启思考。思考模式下 temperature 不生效，推理还会占掉输出额度。
-        "thinking": {"type": "disabled"},
-        "max_tokens": _max_tokens_for(system_text, user),
-        "messages": [
-            {"role": "system", "content": system_text},
-            {"role": "user", "content": user},
-        ],
-    }
+        base_user = _message(intro, lines, carry, carry_note or POLISH_CARRY)
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     last = "DeepSeek 请求失败"
-    for _attempt in range(2):
+    for attempt in range(2):
+        parts = [base_user]
+        if extra:
+            parts.append(extra)
+        if repair:
+            parts.append(repair)
+        if attempt:
+            parts.append(_line_repair(len(lines)))
+        user = "\n".join(parts)
+        payload = {
+            "model": settings.deepseek_model,
+            "temperature": 0.3,
+            # 当前接口默认开启思考。思考模式下 temperature 不生效，推理还会占掉输出额度。
+            "thinking": {"type": "disabled"},
+            "max_tokens": _max_tokens_for(system_text, user),
+            "messages": [
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user},
+            ],
+        }
         try:
             response = client.post(settings.deepseek_url, json=payload, headers=headers)
         except Exception as exc:
@@ -457,11 +704,33 @@ def _deepseek_batch(
             continue
         try:
             body = response.json()
-            content = body["choices"][0]["message"]["content"]
-            return parse_numbered(str(content), len(lines))
-        except (KeyError, IndexError, TypeError, ValueError, SubtitleGenerationError) as exc:
+            choice = body["choices"][0]
+            finish = choice.get("finish_reason") if isinstance(choice, Mapping) else None
+            if finish == "length":
+                last = "译文行数与原文不一致"
+                continue
+            content = choice["message"]["content"]
+            aligned = align_translation(str(content), len(lines))
+            if aligned is None:
+                last = "译文行数与原文不一致"
+                continue
+            return aligned
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
             last = _safe(str(exc), key)
     raise SubtitleGenerationError(last)
+
+
+def _placeholder_note(lines: Sequence[str]) -> str:
+    found: list[str] = []
+    for line in lines:
+        for token in _CANONICAL_TOKEN.findall(line):
+            if token not in found:
+                found.append(token)
+    if not found:
+        return ""
+    shown = "、".join(found[:12])
+    suffix = "等" if len(found) > 12 else ""
+    return f"这些记号必须原样保留，不要翻译，也不要删改：{shown}{suffix}。"
 
 
 def _message(
@@ -472,6 +741,10 @@ def _message(
     if carry:
         rows = "\n".join(f"{source} → {target}" for source, target in carry)
         text += "\n" + carry_note + "\n" + rows
+    if intro == TRANSLATE_INTRO:
+        note = _placeholder_note(lines)
+        if note:
+            text += "\n" + note
     body = "\n".join(f"{index}|{line}" for index, line in enumerate(lines, 1))
     return text + "\n" + body
 
