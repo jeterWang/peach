@@ -1,12 +1,14 @@
 """把还没有中文字幕的影片转成可自动打开的中文字幕。
 
-日语音轨用 faster-whisper 加载 kotoba-whisper（或配置里的其他 CTranslate2 权重），
-`language` 固定为 `ja`。识别结果先交给 DeepSeek 校对日语，再整片译成中文。
-校对只改文字，条数和时间轴保持不变。密钥只读 `DEEPSEEK_API_KEY`。
+同目录已有可用日语外挂时，直接采用它的时间轴和对白，不再跑 faster-whisper。
+没有这种外挂时，日语音轨用 faster-whisper 加载 kotoba-whisper（或配置里的其他
+CTranslate2 权重），`language` 固定为 `ja`，并丢掉无语音、重复乱码和置信度过低的段。
+识别或外挂文本先交给 DeepSeek 校对日语，空白行在翻译前丢掉，再整片译成中文。
+校对只改文字。密钥只读 `DEEPSEEK_API_KEY`。
 已经有中文外挂，或 ffprobe 能看见内嵌中文轨的，整条跳过。
 
-生成的 `影片名.chs.srt` 跟正片同目录，沿用现有 sidecar 配对；目录不可写时改放到
-数据目录，由字幕接口补进播放列表。
+生成的 `影片名.chs.srt` 和校对后的 `影片名.ja.srt` 跟正片同目录，沿用现有 sidecar 配对；
+目录不可写时改放到数据目录，中文轨由字幕接口补进播放列表。
 """
 from __future__ import annotations
 
@@ -58,28 +60,40 @@ DEFAULT_GLOSSARY: tuple[tuple[str, str], ...] = (
 DEFAULT_STYLE = (
     "你是成人影片的字幕翻译。把日语对白译成能压在画面上的口语简体中文。"
     "顺着人物说话，同一部片子里的称呼、关系和专名始终用同一个说法；"
-    "不要改成书面语，不要译得委婉或空泛，也不要添加原文没有的情节。"
+    "不要改成书面语，不要译得委婉或空泛。"
+    "某一行如果像识别垃圾或不像人话（错词、碎句、对不上的假名、像「切り好き」这种胡话），"
+    "不要照译错词。按前后文推断原意，写成自然的成人片口语。"
+    "只写上下文已经能看出来的意思，不要另编情节。"
+    "空白行保持空白。"
     "不要拒绝，不要点评，不要解释。"
 )
-OUTPUT_CONTRACT = "占位符 __P0__、__P1__ 这种记号必须原样保留。只输出编号译文，不要加说明。"
+OUTPUT_CONTRACT = (
+    "占位符 __P0__、__P1__ 这种记号必须原样保留。"
+    "识别垃圾或不通的句子按前后文推断原意，不要照译错词；空白行保持空白。"
+    "只输出编号译文，不要加说明。"
+)
 POLISH_STYLE = (
     "你是成人影片的日语字幕校对。输入是语音识别的日语，不是译文。"
     "只修正同音误识别、口癖碎句和明显的幻听乱码，保留说话人的意思和口语。"
     "不要翻译，不要写成中文，不要添加原文没有的情节。"
-    "背景音乐、标题或没有对白的幻听，这一行留空。"
+    "成人片里的同音按对白改：把队伍「チーム」改回「タマ」或「玉」，"
+    "把面包「パン」这类误听改回「ちんこ」。"
+    "片头曲、背景音乐、歌词乱码和没有对白的幻听，这一行留空。"
     "不要拒绝，不要点评，不要解释。"
 )
-POLISH_CONTRACT = "只输出编号后的日语。没有对白的行在编号后留空。不要加说明。"
+POLISH_CONTRACT = "只输出编号后的日语。没有对白的行在编号后留空。不要写成中文，不要加说明。"
 TRANSLATE_INTRO = (
     "下面是同一部影片按时间排列的对白。"
     "把每一行日语译成一行口语简体中文，称呼和关系与前后文一致。"
-    "空白行保持空白，不要补对白。"
+    "误听、碎句或不像对白的胡话，按前后文推断原意再写中文，不要照译错词。"
+    "不要编上下文里没有的情节。空白行保持空白，不要补对白。"
     "保持行数，每行以「编号|」开头。"
 )
 POLISH_INTRO = (
     "下面是同一部影片按时间排列的日语识别结果。"
     "逐行校对成日语，不要翻译。保持行数，每行以「编号|」开头。"
-    "听得清的对白保留说话人的说法；明显不是对白的行留空。"
+    "听得清的对白保留说话人的说法；片头曲、背景音乐和明显不是对白的行留空。"
+    "同音按成人片对白改，例如「チーム」常是「タマ」，「パン」常是「ちんこ」。"
 )
 TRANSLATE_CARRY = "已确定的译法保持不变，这些行不要再次输出："
 POLISH_CARRY = "前面已经改成这些说法，同一称呼保持一致，这些行不要再次输出："
@@ -476,16 +490,45 @@ def load_whisper(settings: SubtitleSettings, download_root: Path):
     )
 
 
+# faster-whisper 默认要 no_speech_prob > 0.6 且 avg_logprob < -1.0 才当静音丢掉，
+# compression_ratio > 2.4 才当失败。片头曲和低置信幻听经常只越过其中一条，
+# 模型对错词仍可以很有信心。这里任一条成立就丢掉，阈值也收紧一点：
+# no_speech_prob >= 0.5，compression_ratio >= 2.2，avg_logprob < -0.8。
+_NO_SPEECH_PROB = 0.5
+_COMPRESSION_RATIO = 2.2
+_AVG_LOGPROB = -0.8
+
+
+def segment_kept(segment) -> bool:
+    """空文本、无语音、重复乱码或置信度过低的段不进入字幕。"""
+    text = str(getattr(segment, "text", "") or "").strip()
+    if not text:
+        return False
+    no_speech = float(getattr(segment, "no_speech_prob", 0.0) or 0.0)
+    ratio = float(getattr(segment, "compression_ratio", 0.0) or 0.0)
+    logprob = float(getattr(segment, "avg_logprob", 0.0) or 0.0)
+    if no_speech >= _NO_SPEECH_PROB or ratio >= _COMPRESSION_RATIO or logprob < _AVG_LOGPROB:
+        return False
+    return True
+
+
 def cues_from_model(model, wav: Path, settings: SubtitleSettings):
-    options = {"language": "ja", "vad_filter": True, "condition_on_previous_text": False}
+    options = {
+        "language": "ja",
+        "vad_filter": True,
+        "condition_on_previous_text": False,
+        "no_speech_threshold": _NO_SPEECH_PROB,
+        "compression_ratio_threshold": _COMPRESSION_RATIO,
+        "log_prob_threshold": _AVG_LOGPROB,
+    }
     if "kotoba" in settings.model.casefold():
         options["chunk_length"] = 15
     segments, _info = model.transcribe(str(wav), **options)
     cues = []
     for segment in segments:
-        text = str(segment.text or "").strip()
-        if text:
-            cues.append((float(segment.start), float(segment.end), text))
+        if not segment_kept(segment):
+            continue
+        cues.append((float(segment.start), float(segment.end), str(segment.text).strip()))
     return cues
 
 
@@ -542,6 +585,142 @@ def sidecar_paths(video: Path) -> tuple[Path, Path]:
     return path, path.with_name(path.name + ".peach.json")
 
 
+def ja_sidecar_path(video: Path) -> Path:
+    """校对后的日语轨，跟正片同目录。"""
+    return video.with_name(f"{video.stem}.ja.srt")
+
+
+_SUBTITLE_BYTE_LIMIT = 4 * 1024 * 1024
+_KANA = re.compile(r"[\u3040-\u30ff]")
+_KANA_MIN = 12
+_CUE_TIME = re.compile(
+    r"(\d{1,3}):([0-5]\d):([0-5]\d)[.,](\d{1,3})\s*-->\s*"
+    r"(\d{1,3}):([0-5]\d):([0-5]\d)[.,](\d{1,3})"
+)
+_MARKUP = re.compile(r"<[^>]+>")
+
+
+def sidecar_is_chinese_source(name: str, language: str = "") -> bool:
+    """中文外挂不能当作日语对白。`.chs.srt` 靠文件名语言，标题里的「中文」同样排除。"""
+    if row_is_chinese({"language": language, "name": name}):
+        return True
+    return subtitle_tag_is_chinese(language, name)
+
+
+def _cue_seconds(hours: str, minutes: str, seconds: str, fraction: str) -> float:
+    millis = int(fraction.ljust(3, "0")[:3])
+    return int(hours) * 3600 + int(minutes) * 60 + int(seconds) + millis / 1000.0
+
+
+def cues_from_subtitle_text(text: str, fmt: str) -> list[tuple[float, float, str]]:
+    """SRT 或 VTT 的时间轴和对白。多行正文合成一行，空对白不留下。"""
+    from .subtitles import srt_to_vtt, vtt_passthrough
+    rendered = vtt_passthrough(text) if fmt == "vtt" else srt_to_vtt(text)
+    normalized = rendered.replace("\r\n", "\n").replace("\r", "\n")
+    cues = []
+    for block in re.split(r"\n\s*\n", normalized.strip()):
+        lines = [line for line in block.split("\n") if line.strip()]
+        if not lines or lines[0].startswith(("WEBVTT", "NOTE", "STYLE", "REGION")):
+            continue
+        timing = None
+        body_at = 0
+        for index, line in enumerate(lines):
+            match = _CUE_TIME.search(line)
+            if match:
+                timing = match
+                body_at = index + 1
+                break
+        if timing is None:
+            continue
+        body = " ".join(_MARKUP.sub("", " ".join(lines[body_at:])).split())
+        if not body:
+            continue
+        start = _cue_seconds(*timing.groups()[:4])
+        end = _cue_seconds(*timing.groups()[4:])
+        cues.append((start, end if end > start else start + 0.2, body))
+    return cues
+
+
+def _japanese_source_rank(video: Path, name: str, language: str) -> int | None:
+    """0 同名 srt，1 同名 vtt，2 标成日语，3 未标语言但正文可能是日语。中文是 None。"""
+    if sidecar_is_chinese_source(name, language):
+        return None
+    suffix = Path(name).suffix.lower()
+    if suffix not in {".srt", ".vtt"}:
+        return None
+    plain = Path(name).stem.casefold() == video.stem.casefold()
+    if plain and suffix == ".srt":
+        return 0
+    if plain and suffix == ".vtt":
+        return 1
+    if language.casefold().startswith("ja"):
+        return 2
+    return 3
+
+
+def _read_subtitle(path: Path) -> str | None:
+    from .subtitles import SubtitleUndecodable, decode
+    try:
+        size = path.stat().st_size
+        if size <= 0 or size > _SUBTITLE_BYTE_LIMIT:
+            return None
+        return decode(path.read_bytes())
+    except (OSError, SubtitleUndecodable):
+        return None
+
+
+def japanese_source_cues(video: Path) -> list[tuple[float, float, str]] | None:
+    """同目录可用的日语外挂。没有、解析失败或没有对白时返回 None，调用方改走识别。
+
+    同名 `.srt` 优先于同名 `.vtt`，再其次是标成日语的文件。未标语言的其他字幕
+    只有假名够多才采用。`.chs.srt` 一类中文轨一律不读。
+    """
+    try:
+        rows = discover_sidecars(video, set(VIDEO_EXTENSIONS))
+    except OSError:
+        return None
+    ranked = []
+    for row in rows:
+        name = str(row.get("name") or "")
+        language = str(row.get("language") or "")
+        rank = _japanese_source_rank(video, name, language)
+        if rank is None:
+            continue
+        ranked.append((rank, name.casefold(), row))
+    if not ranked:
+        return None
+    ranked.sort()
+    best = ranked[0][0]
+    for rank, _name, row in ranked:
+        if rank != best:
+            break
+        text = _read_subtitle(Path(str(row.get("path") or "")))
+        if rank == 3:
+            if text is None or len(_KANA.findall(text)) < _KANA_MIN:
+                continue
+        elif text is None:
+            return None
+        cues = cues_from_subtitle_text(text, str(row.get("format") or "srt"))
+        if cues:
+            return cues
+        return None
+    return None
+
+
+def align_polished(
+    cues: Sequence[tuple[float, float, str]], texts: Sequence[str],
+) -> list[tuple[float, float, str]]:
+    """校对结果按原时间轴配对，丢掉留空的行。"""
+    if len(texts) != len(cues):
+        raise SubtitleGenerationError("校对行数与原文不一致")
+    kept = []
+    for (start, end, _source), text in zip(cues, texts, strict=True):
+        cleaned = " ".join(str(text).split())
+        if cleaned:
+            kept.append((float(start), float(end), cleaned))
+    return kept
+
+
 def _writable(directory: Path) -> bool:
     probe = directory / f".peach-subtitle-{uuid.uuid4().hex}.tmp"
     try:
@@ -565,6 +744,59 @@ def _marker_fresh(path: Path, fingerprint: str) -> bool:
 def _queue_path(db) -> Path:
     from .update_tasks import state_for
     return state_for(Path(db)).parent / "subtitle-generation.json"
+
+
+def _read_queue(db) -> dict:
+    path = _queue_path(db)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _item_rows(value) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    rows = []
+    for item in value:
+        if isinstance(item, dict) and isinstance(item.get("id"), int) and item["id"] > 0:
+            rows.append({"id": item["id"], "message": str(item.get("message") or "")})
+    return rows
+
+
+def _named(asset_id: int, names: dict[int, str], status: str, message: str) -> dict:
+    return {
+        "id": asset_id, "name": names.get(asset_id) or f"作品 {asset_id}",
+        "status": status, "message": message,
+    }
+
+
+def persist_subtitle_enabled(enabled: bool) -> str:
+    """把开关写进设置文件。环境变量仍会在下次启动时盖过文件。"""
+    from dataclasses import replace
+
+    from .settings_file import load_config, reset_cache, write
+    notice = ""
+    if os.environ.get("PEACH_SUBTITLES_ENABLED", "").strip():
+        notice = "环境变量 PEACH_SUBTITLES_ENABLED 会在下次启动时覆盖这个开关"
+    try:
+        config = load_config()
+    except Exception:
+        return "配置文件未写入，开关只在本次运行有效"
+    if not config.present:
+        return notice or "尚未完成首次设置，开关只在本次运行有效"
+    if config.subtitles.enabled == enabled:
+        return notice
+    updated = replace(config, subtitles=replace(config.subtitles, enabled=enabled))
+    try:
+        with FileLock(str(config.path.with_suffix(".lock")), timeout=2):
+            write(updated, force=True)
+        reset_cache()
+    except Exception:
+        LOGGER.exception("中文字幕开关没有写进配置")
+        return "配置文件未写入，开关只在本次运行有效"
+    return notice
 
 
 def _mutate_queue(db, change: Callable[[dict], None]) -> None:
@@ -605,10 +837,15 @@ def enqueue_ids(db, ids, *, front: bool = False) -> None:
 
 
 def note_new_assets(db, ids) -> None:
-    """扫描新片后排队。配置关闭时什么都不做；服务在另一个进程里也会看见队列文件。"""
-    from .settings_file import active
-    if not active().subtitles.enabled:
-        return
+    """扫描新片后排队。生成关闭时什么都不做；服务在另一个进程里也会看见队列文件。"""
+    service = current()
+    if service is not None:
+        if not service.effective_enabled():
+            return
+    else:
+        from .settings_file import active
+        if not active().subtitles.enabled:
+            return
     wanted = [int(item) for item in ids if isinstance(item, int) and item > 0]
     if not wanted:
         return
@@ -632,7 +869,8 @@ class SubtitleService:
                  settings: SubtitleSettings | Callable[[], SubtitleSettings] | None = None,
                  translator: Callable | None = None, polisher: Callable | None = None,
                  transcriber: Callable | None = None,
-                 extractor: Callable | None = None, embedded: Callable | None = None):
+                 extractor: Callable | None = None, embedded: Callable | None = None,
+                 persist_enabled: Callable[[bool], str] | None = None):
         self.root = Path(root)
         self.database_path = Path(database_path)
         self.media = media
@@ -651,6 +889,10 @@ class SubtitleService:
         self._swept = False
         self._model = None
         self._model_key: tuple[str, str] | None = None
+        self._enabled: bool | None = None
+        self._current_id: int | None = None
+        self._ignored: set[int] = set()
+        self._persist_enabled = persist_enabled if persist_enabled is not None else persist_subtitle_enabled
 
     def settings(self) -> SubtitleSettings:
         if self._settings is None:
@@ -660,9 +902,84 @@ class SubtitleService:
             return self._settings()
         return self._settings
 
+    def effective_enabled(self) -> bool:
+        """页面开关优先。没动过开关时跟配置文件和环境变量走。"""
+        if self._enabled is not None:
+            return self._enabled
+        return bool(self.settings().enabled)
+
+    def set_enabled(self, enabled: bool) -> dict:
+        """打开或关闭自动生成。配置文件写不上时，开关仍在本次运行里生效。"""
+        self._enabled = bool(enabled)
+        notice = ""
+        try:
+            notice = self._persist_enabled(self._enabled)
+        except Exception:
+            LOGGER.exception("中文字幕开关没有写进配置")
+            notice = "配置文件未写入，开关只在本次运行有效"
+        if self._enabled:
+            self.wake()
+        return self.snapshot(notice=notice)
+
+    def retry(self, asset_id: int) -> dict:
+        """把这一部放回队首。失败和已忽略的都能再排。"""
+        asset_id = int(asset_id)
+        self._ignored.discard(asset_id)
+        enqueue_ids(self.database_path, [asset_id], front=True)
+        self._set(asset_id, "queued", "")
+        self.wake()
+        return self.snapshot()
+
+    def ignore(self, asset_id: int) -> dict:
+        """移出队列。正在生成的一部在写出字幕前停掉。"""
+        asset_id = int(asset_id)
+        self._ignored.add(asset_id)
+        self._set(asset_id, "skipped", "已忽略")
+        return self.snapshot()
+
+    def snapshot(self, notice: str = "") -> dict:
+        """给管理页：开关、数量、正在生成的一部，以及失败、排队和已忽略。"""
+        payload = _read_queue(self.database_path)
+        queue = [int(item) for item in payload.get("queue", []) if isinstance(item, int) and item > 0]
+        failed = _item_rows(payload.get("failed"))
+        skipped = _item_rows(payload.get("skipped"))
+        with self._guard:
+            current_id = self._current_id
+        if current_id in queue:
+            queue = [item for item in queue if item != current_id]
+        ids = [item for item in (
+            current_id, *queue, *(row["id"] for row in failed), *(row["id"] for row in skipped),
+        ) if item]
+        names = self._names(ids)
+        unavailable = ""
+        if self.effective_enabled():
+            unavailable = self._unavailable(self.settings())
+        text = notice or self._standing_notice()
+        return {
+            "enabled": self.effective_enabled(),
+            "notice": text,
+            "unavailable": unavailable,
+            "counts": {
+                "queued": len(queue),
+                "running": 1 if current_id else 0,
+                "failed": len(failed),
+                "ready": int(payload.get("ready") or 0),
+                "skipped": len(skipped),
+            },
+            "current": _named(current_id, names, "running", "") if current_id else None,
+            "queued": [_named(item, names, "queued", "") for item in queue[:40]],
+            "failed": [_named(row["id"], names, "failed", row["message"]) for row in failed[:40]],
+            "skipped": [_named(row["id"], names, "skipped", row["message"]) for row in skipped[:40]],
+        }
+
     def start(self) -> None:
-        if not self.settings().enabled:
+        if not self.effective_enabled():
             return
+        with self._guard:
+            alive = self._thread is not None and self._thread.is_alive()
+        if alive:
+            return
+        self._requeue_interrupted()
         with self._guard:
             if self._thread is not None and self._thread.is_alive():
                 return
@@ -690,7 +1007,7 @@ class SubtitleService:
         current = self._status_of(asset_id)
         if current in {"queued", "running"}:
             return self._public(settings, current, "", pending=True)
-        if not settings.enabled:
+        if not self.effective_enabled():
             return self._public(settings, "idle", "", pending=False)
         reason = self._unavailable(settings)
         if reason:
@@ -706,16 +1023,26 @@ class SubtitleService:
 
     def extra_rows(self, asset_id: int, video_name: str, rows: Sequence[Mapping]) -> list[dict]:
         """目录不可写时，把数据目录里的字幕补进同一份列表。"""
+        stem = Path(video_name).stem if video_name else ""
+        known = {str(row.get("name") or "").casefold() for row in rows}
+        found = []
         path = self._stored_srt(asset_id)
-        if not path.is_file():
-            return []
-        name = f"{Path(video_name).stem}.chs.srt" if video_name else path.name
-        if any(str(row.get("name") or "").casefold() == name.casefold() for row in rows):
-            return []
-        return [{
-            "path": str(path), "name": name, "language": "zh-Hans", "format": "srt",
-            "size": path.stat().st_size, "pairing": "suffix", "generated": True,
-        }]
+        if path.is_file():
+            name = f"{stem}.chs.srt" if stem else path.name
+            if name.casefold() not in known:
+                found.append({
+                    "path": str(path), "name": name, "language": "zh-Hans", "format": "srt",
+                    "size": path.stat().st_size, "pairing": "suffix", "generated": True,
+                })
+        ja = self._stored_ja_srt(asset_id)
+        if ja.is_file():
+            ja_name = f"{stem}.ja.srt" if stem else ja.name
+            if ja_name.casefold() not in known:
+                found.append({
+                    "path": str(ja), "name": ja_name, "language": "ja", "format": "srt",
+                    "size": ja.stat().st_size, "pairing": "suffix", "generated": True,
+                })
+        return found
 
     def stored_root_has(self, path: Path) -> bool:
         try:
@@ -731,7 +1058,7 @@ class SubtitleService:
             except (OSError, sqlite3.Error):
                 LOGGER.exception("中文字幕队列没有列出来")
         while not self._stop.is_set():
-            if not self.settings().enabled:
+            if not self.effective_enabled():
                 self._wake.wait(2)
                 self._wake.clear()
                 continue
@@ -757,7 +1084,16 @@ class SubtitleService:
             return None
         return found[0] if found else None
 
+    def _abandoned(self, asset_id: int) -> bool:
+        if asset_id not in self._ignored:
+            return False
+        self._ignored.discard(asset_id)
+        self._set(asset_id, "skipped", "已忽略")
+        return True
+
     def _run_one(self, asset_id: int) -> None:
+        if self._abandoned(asset_id):
+            return
         self._set(asset_id, "running", "")
         wav = self.root / "work" / f"{asset_id}.wav"
         try:
@@ -773,22 +1109,34 @@ class SubtitleService:
                 self._set(asset_id, "ready" if reason == "已是最新" else "skipped", "" if reason == "已是最新" else reason)
                 return
             settings = self.settings()
-            self._extract(video.path, wav)
-            cues = self._transcribe(wav, settings)
+            loaded = japanese_source_cues(video.path)
+            source = "asr"
+            if loaded:
+                cues = loaded
+                source = "sidecar"
+            else:
+                self._extract(video.path, wav)
+                cues = self._transcribe(wav, settings)
             if not cues:
                 raise SubtitleGenerationError("没有识别到日语对白")
+            if self._abandoned(asset_id):
+                return
             texts = [text for _start, _end, text in cues]
             if settings.polish_transcript:
                 texts = list(self._polisher(texts, settings))
-                if len(texts) != len(cues):
-                    raise SubtitleGenerationError("校对行数与原文不一致")
+                cues = align_polished(cues, texts)
+                texts = [text for _start, _end, text in cues]
+            if not texts:
+                raise SubtitleGenerationError("没有识别到日语对白")
             translated = self._translator(texts, settings)
             if len(translated) != len(cues):
                 raise SubtitleGenerationError("译文行数与原文不一致")
             zh = [(start, end, text) for (start, end, _source), text in zip(cues, translated, strict=True) if text.strip()]
             if not zh:
                 raise SubtitleGenerationError("译文是空的")
-            self._publish(video, asset_id, zh, settings)
+            if self._abandoned(asset_id):
+                return
+            self._publish(video, asset_id, zh, settings, japanese=cues, source=source)
             self._set(asset_id, "ready", "")
         except SubtitleGenerationError as exc:
             self._set(asset_id, "failed", _safe(str(exc), os.environ.get(API_KEY_ENV, "")))
@@ -830,19 +1178,28 @@ class SubtitleService:
             return False
         return bool(embedded_chinese(choice.path, video))
 
-    def _publish(self, video: VideoFile, asset_id: int, cues, settings: SubtitleSettings) -> None:
+    def _publish(
+        self, video: VideoFile, asset_id: int, cues, settings: SubtitleSettings, *,
+        japanese: Sequence[tuple[float, float, str]] = (), source: str = "asr",
+    ) -> None:
         text = to_srt(cues)
+        ja_text = to_srt(japanese) if japanese else ""
         record = json.dumps({
             "fingerprint": video.fingerprint, "model": settings.model, "translator": "deepseek",
+            "source": source,
         }, ensure_ascii=False)
         path, marker = sidecar_paths(video.path)
         if _writable(video.path.parent):
             atomic_write_text(path, text)
+            if ja_text:
+                atomic_write_text(ja_sidecar_path(video.path), ja_text)
             atomic_write_text(marker, record)
             return
         folder = self.root / "tracks"
         folder.mkdir(parents=True, exist_ok=True)
         atomic_write_text(self._stored_srt(asset_id), text)
+        if ja_text:
+            atomic_write_text(self._stored_ja_srt(asset_id), ja_text)
         atomic_write_text(self._stored_marker(asset_id), record)
 
     def _extract(self, source: Path, dest: Path) -> None:
@@ -887,6 +1244,9 @@ class SubtitleService:
     def _stored_srt(self, asset_id: int) -> Path:
         return self.root / "tracks" / f"{asset_id}.chs.srt"
 
+    def _stored_ja_srt(self, asset_id: int) -> Path:
+        return self.root / "tracks" / f"{asset_id}.ja.srt"
+
     def _stored_marker(self, asset_id: int) -> Path:
         path = self._stored_srt(asset_id)
         return path.with_name(path.name + ".peach.json")
@@ -905,6 +1265,14 @@ class SubtitleService:
     def _set(self, asset_id: int, status: str, message: str) -> None:
         with self._guard:
             self._status[asset_id] = {"status": status, "message": message}
+            if status == "running":
+                self._current_id = asset_id
+            elif self._current_id == asset_id:
+                self._current_id = None
+        try:
+            self._record(asset_id, status, message)
+        except OSError:
+            LOGGER.exception("中文字幕队列状态没有写上")
 
     def _status_of(self, asset_id: int) -> str:
         with self._guard:
@@ -916,5 +1284,64 @@ class SubtitleService:
 
     def _public(self, settings: SubtitleSettings, status: str, message: str, *, pending: bool) -> dict:
         return {
-            "enabled": settings.enabled, "pending": pending, "status": status, "message": message,
+            "enabled": self.effective_enabled(), "pending": pending, "status": status, "message": message,
         }
+
+    def _standing_notice(self) -> str:
+        if os.environ.get("PEACH_SUBTITLES_ENABLED", "").strip():
+            return "环境变量 PEACH_SUBTITLES_ENABLED 会在下次启动时覆盖这个开关"
+        return ""
+
+    def _names(self, ids: list[int]) -> dict[int, str]:
+        wanted = list(dict.fromkeys(int(item) for item in ids if item))
+        if not wanted or not self.database_path.is_file():
+            return {}
+        found: dict[int, str] = {}
+        with closing(sqlite3.connect(self.database_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            for offset in range(0, len(wanted), 900):
+                batch = wanted[offset:offset + 900]
+                for row in connection.execute(
+                        "SELECT id, name FROM asset WHERE id IN (" + ",".join("?" * len(batch)) + ")", batch):
+                    found[int(row[0])] = str(row[1] or "")
+        return found
+
+    def _requeue_interrupted(self) -> None:
+        current = _read_queue(self.database_path).get("current")
+        if not isinstance(current, int) or current <= 0:
+            return
+        enqueue_ids(self.database_path, [current], front=True)
+
+        def change(payload: dict) -> None:
+            if payload.get("current") == current:
+                payload["current"] = None
+
+        try:
+            _mutate_queue(self.database_path, change)
+        except OSError:
+            LOGGER.exception("中断的中文字幕任务没有放回队列")
+
+    def _record(self, asset_id: int, status: str, message: str) -> None:
+        def change(payload: dict) -> None:
+            failed = [item for item in _item_rows(payload.get("failed")) if item["id"] != asset_id]
+            skipped = [item for item in _item_rows(payload.get("skipped")) if item["id"] != asset_id]
+            queue = [item for item in payload.get("queue", []) if isinstance(item, int)]
+            if status == "queued":
+                if asset_id not in queue:
+                    queue.append(asset_id)
+            elif status == "running":
+                payload["current"] = asset_id
+            else:
+                queue = [item for item in queue if item != asset_id]
+                if status == "failed":
+                    failed.insert(0, {"id": asset_id, "message": message[:200]})
+                elif status == "skipped":
+                    skipped.insert(0, {"id": asset_id, "message": message[:200]})
+                elif status == "ready" and not message:
+                    payload["ready"] = int(payload.get("ready") or 0) + 1
+            if status != "running" and payload.get("current") == asset_id:
+                payload["current"] = None
+            payload["queue"] = queue
+            payload["failed"] = failed[:80]
+            payload["skipped"] = skipped[:80]
+
+        _mutate_queue(self.database_path, change)

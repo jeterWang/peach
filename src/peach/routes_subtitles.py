@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -86,6 +86,47 @@ def remembered_subtitle_track(request: Request, filename: str, video: str):
     if path is None:
         raise HTTPException(404, "字幕不存在")
     return FileResponse(path, media_type="text/vtt", headers={"Cache-Control": "private, no-cache"})
+
+
+def _generation(request: Request):
+    service = getattr(request.app.state, "subtitle_generation", None)
+    if service is None:
+        raise HTTPException(503, "中文字幕生成没有启动")
+    return service
+
+
+def _asset_id(body: dict) -> int:
+    asset_id = body.get("id")
+    if isinstance(asset_id, bool) or not isinstance(asset_id, int) or asset_id <= 0:
+        raise HTTPException(400, "id 必须是作品编号")
+    return asset_id
+
+
+@router.get("/api/subtitles/generation")
+def subtitle_generation_status(request: Request):
+    """自动中文字幕的开关、数量和队列。"""
+    return _generation(request).snapshot()
+
+
+@router.post("/api/subtitles/generation")
+async def subtitle_generation_enabled(request: Request, body: dict = Body(...)):
+    """打开或关闭自动生成。"""
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(400, "enabled 必须是 true 或 false")
+    return await run_in_threadpool(_generation(request).set_enabled, enabled)
+
+
+@router.post("/api/subtitles/generation/retry")
+async def subtitle_generation_retry(request: Request, body: dict = Body(...)):
+    """把一部失败或已忽略的作品放回队首。"""
+    return await run_in_threadpool(_generation(request).retry, _asset_id(body))
+
+
+@router.post("/api/subtitles/generation/ignore")
+async def subtitle_generation_ignore(request: Request, body: dict = Body(...)):
+    """把一部移出队列。正在生成的一部在写出字幕前停掉。"""
+    return await run_in_threadpool(_generation(request).ignore, _asset_id(body))
 
 
 @router.get("/api/subtitles/search")
